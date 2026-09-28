@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Header } from './components/Header';
 import { TranscriptArea } from './components/TranscriptArea';
 import { InputBar } from './components/InputBar';
@@ -12,6 +12,7 @@ import { NewTopicModal } from './components/NewTopicModal';
 import { TopicHistoryModal } from './components/TopicHistoryModal';
 import { ChatMessage, SavedTopicSession, TopicEvaluation } from './types';
 import { voice, sounds } from './utils/audio';
+import { useVoiceConversation } from './utils/useVoiceConversation';
 
 const STORAGE_KEY_SESSIONS = 'conversa_ai_topics_v2';
 const STORAGE_KEY_TTS = 'conversa_ai_tts_enabled';
@@ -26,11 +27,7 @@ export default function App() {
 
   // View mode: 'call' (interactive glowing orb) or 'chat' (full transcript feed)
   const [viewMode, setViewMode] = useState<'call' | 'chat'>('call');
-
-  // Voice Interaction state
-  const [isListening, setIsListening] = useState<boolean>(false);
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
-  const [currentTranscript, setCurrentTranscript] = useState<string>('');
 
   // Modals
   const [isNewTopicModalOpen, setIsNewTopicModalOpen] = useState(false);
@@ -39,7 +36,7 @@ export default function App() {
   // Settings
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_TTS);
-    return saved !== null ? saved === 'true' : true; // Default ON for voice app
+    return saved !== null ? saved === 'true' : true;
   });
 
   const [voiceRate, setVoiceRate] = useState<number>(() => {
@@ -52,27 +49,12 @@ export default function App() {
     try {
       const data = localStorage.getItem(STORAGE_KEY_SESSIONS);
       if (data) return JSON.parse(data);
-      // Legacy migration check
-      const oldData = localStorage.getItem('banca_examinadora_sessions_v1');
-      if (oldData) {
-        const parsedOld = JSON.parse(oldData);
-        return parsedOld.map((o: any) => ({
-          id: o.id || Date.now().toString(),
-          topic: o.topic || 'Tópico de Estudo',
-          date: o.date || new Date().toLocaleDateString('pt-BR'),
-          updatedAt: new Date().toISOString(),
-          messages: o.messages || [],
-          interruptionCount: o.interruptionCount || 0,
-          attemptsCount: 1,
-        }));
-      }
       return [];
     } catch {
       return [];
     }
   });
 
-  // Persist settings
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_TTS, String(ttsEnabled));
   }, [ttsEnabled]);
@@ -85,7 +67,6 @@ export default function App() {
     localStorage.setItem(STORAGE_KEY_SESSIONS, JSON.stringify(savedSessions));
   }, [savedSessions]);
 
-  // Date formatter
   const getFormattedDate = () => {
     return new Date().toLocaleString('pt-BR', {
       day: '2-digit',
@@ -96,25 +77,155 @@ export default function App() {
     });
   };
 
-  // Helper to speak with TTS
-  const speakText = (text: string) => {
-    if (!ttsEnabled) return;
-    setIsSpeaking(true);
-    voice.speak(text, {
-      rate: voiceRate,
-      onStart: () => setIsSpeaking(true),
-      onEnd: () => setIsSpeaking(false),
-      onError: () => setIsSpeaking(false),
-    });
-  };
+  // Helper to speak with TTS and resume mic when speech finishes
+  const speakText = useCallback(
+    (text: string, onDone?: () => void) => {
+      if (!ttsEnabled) {
+        onDone?.();
+        return;
+      }
+      setIsSpeaking(true);
+      voice.speak(text, {
+        rate: voiceRate,
+        onStart: () => setIsSpeaking(true),
+        onEnd: () => {
+          setIsSpeaking(false);
+          onDone?.();
+        },
+        onError: () => {
+          setIsSpeaking(false);
+          onDone?.();
+        },
+      });
+    },
+    [ttsEnabled, voiceRate]
+  );
 
-  // Stop speaking
-  const handleStopSpeaking = () => {
+  const handleStopSpeaking = useCallback(() => {
     voice.stop();
     setIsSpeaking(false);
-  };
+  }, []);
 
-  // Open Topic
+  // Send message implementation
+  const handleSendMessage = useCallback(
+    async (text: string) => {
+      if (!text.trim() || isLoading) return;
+
+      handleStopSpeaking();
+
+      if (!activeTopic) {
+        handleOpenTopic(text.trim());
+        return;
+      }
+
+      const timestamp = getFormattedDate();
+      const userMsg: ChatMessage = {
+        id: 'msg-u-' + Date.now(),
+        role: 'user',
+        text: text.trim(),
+        timestamp,
+      };
+
+      setMessages((prev) => [...prev, userMsg]);
+      setIsLoading(true);
+
+      try {
+        const historyForApi = [...messages, userMsg].map((m) => ({
+          role: m.role,
+          text: m.text,
+        }));
+
+        const res = await fetch('/api/evaluate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            topic: activeTopic,
+            action: 'message',
+            userMessage: text.trim(),
+            history: historyForApi,
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Erro na resposta do tutor');
+        }
+
+        if (data.type === 'EVALUATION' && data.evaluation) {
+          const reportMsg: ChatMessage = {
+            id: 'msg-eval-' + Date.now(),
+            role: 'assistant',
+            text: data.spokenFeedback || 'Avaliação final concluída!',
+            timestamp: getFormattedDate(),
+            interlocutionType: 'evaluation',
+            evaluation: data.evaluation,
+          };
+
+          setMessages((prev) => {
+            const final = [...prev, reportMsg];
+            saveSessionToStorage(final, data.evaluation);
+            return final;
+          });
+
+          setEvaluation(data.evaluation);
+          sounds.playGradeFanfare();
+          speakText(data.spokenFeedback || 'Parabéns por concluir sua explicação!');
+          voiceHook.setIsListening(false);
+        } else {
+          const aiReply = data.spokenFeedback || data.text || 'Entendido. Continue sua explicação!';
+          const interlocutionType = data.interlocutionType || 'question';
+
+          const aiMsg: ChatMessage = {
+            id: 'msg-ai-' + Date.now(),
+            role: 'assistant',
+            text: aiReply,
+            timestamp: getFormattedDate(),
+            interlocutionType,
+            detectedCorrection: data.detectedCorrection,
+          };
+
+          setMessages((prev) => [...prev, aiMsg]);
+
+          if (interlocutionType === 'correction') {
+            sounds.playCorrectionPing();
+          }
+
+          // Read aloud and immediately re-open mic for fluid conversation when AI finishes!
+          speakText(aiReply, () => {
+            if (activeTopic) {
+              voiceHook.setIsListening(true);
+            }
+          });
+        }
+      } catch (err: any) {
+        console.error('Erro na resposta:', err);
+        const errMsg: ChatMessage = {
+          id: 'msg-err-' + Date.now(),
+          role: 'assistant',
+          text: 'Tive uma instabilidade rápida de conexão: ' + (err?.message || 'Pode continuar falando.'),
+          timestamp: getFormattedDate(),
+          interlocutionType: 'correction',
+        };
+        setMessages((prev) => [...prev, errMsg]);
+        // Resume mic so user can keep going
+        voiceHook.setIsListening(true);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [activeTopic, isLoading, messages, speakText, handleStopSpeaking]
+  );
+
+  // Hook for voice conversation with automatic silence detection (VAD)
+  const voiceHook = useVoiceConversation({
+    onSendMessage: handleSendMessage,
+    isLoading,
+    isSpeaking,
+    activeTopic,
+    autoSendDelayMs: 1400,
+  });
+
+  // Open Topic action
   const handleOpenTopic = async (topic: string) => {
     handleStopSpeaking();
     sounds.playStartChime();
@@ -123,8 +234,8 @@ export default function App() {
     setActiveTopic(topic);
     setEvaluation(null);
     setMessages([]);
-    setCurrentTranscript('');
-    setViewMode('call'); // Start in immersive voice call mode
+    voiceHook.setCurrentText('');
+    setViewMode('call');
 
     const sessionId = Date.now().toString();
     setCurrentSessionId(sessionId);
@@ -154,7 +265,11 @@ export default function App() {
       };
 
       setMessages([openingMsg]);
-      speakText(welcomeText);
+
+      // Speak welcome and then activate microphone for conversation
+      speakText(welcomeText, () => {
+        voiceHook.setIsListening(true);
+      });
     } catch (err: any) {
       console.warn('Fallback abertura local:', err);
       const fallbackText = `Excelente escolha! Pode começar a me explicar ${topic} quando quiser. Estou ouvindo com atenção.`;
@@ -166,111 +281,12 @@ export default function App() {
         interlocutionType: 'encouragement',
       };
       setMessages([fallbackMsg]);
-      speakText(fallbackText);
-    } finally {
-      setIsLoading(false);
-      // Automatically prompt mic so user can talk
-      setIsListening(true);
-    }
-  };
-
-  // Send message
-  const handleSendMessage = async (text: string) => {
-    if (!text.trim() || isLoading) return;
-
-    handleStopSpeaking();
-    setCurrentTranscript('');
-
-    if (!activeTopic) {
-      handleOpenTopic(text.trim());
-      return;
-    }
-
-    const timestamp = getFormattedDate();
-    const userMsg: ChatMessage = {
-      id: 'msg-u-' + Date.now(),
-      role: 'user',
-      text: text.trim(),
-      timestamp,
-    };
-
-    const updatedMessages = [...messages, userMsg];
-    setMessages(updatedMessages);
-    setIsLoading(true);
-
-    try {
-      const res = await fetch('/api/evaluate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          topic: activeTopic,
-          action: 'message',
-          userMessage: text.trim(),
-          history: updatedMessages.map((m) => ({
-            role: m.role,
-            text: m.text,
-          })),
-        }),
+      speakText(fallbackText, () => {
+        voiceHook.setIsListening(true);
       });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Erro na resposta do tutor');
-      }
-
-      if (data.type === 'EVALUATION' && data.evaluation) {
-        // Final evaluation triggered by words like "encerrei"
-        const reportMsg: ChatMessage = {
-          id: 'msg-eval-' + Date.now(),
-          role: 'assistant',
-          text: data.spokenFeedback || 'Avaliação final gerada com sucesso!',
-          timestamp: getFormattedDate(),
-          interlocutionType: 'evaluation',
-          evaluation: data.evaluation,
-        };
-
-        const finalMessages = [...updatedMessages, reportMsg];
-        setMessages(finalMessages);
-        setEvaluation(data.evaluation);
-        saveSessionToStorage(finalMessages, data.evaluation);
-        sounds.playGradeFanfare();
-        speakText(data.spokenFeedback || 'Parabéns por concluir sua explicação!');
-        setIsListening(false);
-      } else {
-        // Normal conversation turn
-        const aiReply = data.spokenFeedback || data.text || 'Entendido. Prossiga com sua explicação!';
-        const interlocutionType = data.interlocutionType || 'question';
-
-        const aiMsg: ChatMessage = {
-          id: 'msg-ai-' + Date.now(),
-          role: 'assistant',
-          text: aiReply,
-          timestamp: getFormattedDate(),
-          interlocutionType,
-          detectedCorrection: data.detectedCorrection,
-        };
-
-        const finalMessages = [...updatedMessages, aiMsg];
-        setMessages(finalMessages);
-
-        if (interlocutionType === 'correction') {
-          sounds.playCorrectionPing();
-        }
-
-        speakText(aiReply);
-      }
-    } catch (err: any) {
-      console.error('Erro na resposta:', err);
-      const errMsg: ChatMessage = {
-        id: 'msg-err-' + Date.now(),
-        role: 'assistant',
-        text: 'Não consegui processar essa fala agora: ' + (err?.message || 'Tente novamente.'),
-        timestamp: getFormattedDate(),
-        interlocutionType: 'correction',
-      };
-      setMessages([...updatedMessages, errMsg]);
     } finally {
       setIsLoading(false);
+      voiceHook.setIsListening(true);
     }
   };
 
@@ -279,8 +295,8 @@ export default function App() {
     if (!activeTopic || isLoading) return;
 
     handleStopSpeaking();
-    setIsListening(false);
-    setCurrentTranscript('');
+    voiceHook.setIsListening(false);
+    voiceHook.setCurrentText('');
 
     const timestamp = getFormattedDate();
     const finishPrompt = 'Encerrei minha explicação sobre o tema. Pode avaliar meu desempenho e dar a nota com observações.';
@@ -350,7 +366,6 @@ export default function App() {
     }
   };
 
-  // Save session in storage organized by topic
   const saveSessionToStorage = (allMessages: ChatMessage[], evalData: TopicEvaluation) => {
     if (!activeTopic) return;
 
@@ -381,14 +396,12 @@ export default function App() {
     });
   };
 
-  // Re-try / Re-explain the same topic to improve grade
   const handleRetryTopic = () => {
     if (activeTopic) {
       handleOpenTopic(activeTopic);
     }
   };
 
-  // Select session from history
   const handleSelectSession = (session: SavedTopicSession) => {
     setActiveTopic(session.topic);
     setMessages(session.messages);
@@ -397,12 +410,10 @@ export default function App() {
     setViewMode(session.evaluation ? 'chat' : 'call');
   };
 
-  // Delete session
   const handleDeleteSession = (id: string) => {
     setSavedSessions((prev) => prev.filter((s) => s.id !== id));
   };
 
-  // Clear all
   const handleClearAllSessions = () => {
     setSavedSessions([]);
   };
@@ -429,24 +440,29 @@ export default function App() {
       {/* Main Conversation & Evaluation Area */}
       <main className="flex-1 flex flex-col overflow-hidden relative">
         {activeTopic && viewMode === 'call' && !evaluation ? (
-          /* Voice Call Mode (Glowing Visualizer Orb & Real-time Live Interaction) */
+          /* Voice Call Mode (Fluid Voice-to-Voice Loop) */
           <VoiceCallView
             topic={activeTopic}
             messages={messages}
-            isListening={isListening}
-            onToggleListening={() => setIsListening(!isListening)}
+            isListening={voiceHook.isListening}
+            onToggleListening={voiceHook.toggleListening}
             isSpeaking={isSpeaking}
             onStopSpeaking={handleStopSpeaking}
             isLoading={isLoading}
             onSendMessage={handleSendMessage}
             onFinishTopic={handleFinishTopic}
             evaluation={evaluation}
-            currentTranscript={currentTranscript}
+            currentTranscript={voiceHook.currentText}
+            interimTranscript={voiceHook.interimText}
+            silenceCountdown={voiceHook.silenceCountdown}
+            autoSendEnabled={voiceHook.autoSendEnabled}
+            onToggleAutoSend={() => voiceHook.setAutoSendEnabled(!voiceHook.autoSendEnabled)}
+            onManualSend={voiceHook.manualSend}
             onRetryTopic={handleRetryTopic}
             onSwitchToChat={() => setViewMode('chat')}
           />
         ) : (
-          /* Chat & Transcript Mode */
+          /* Chat & Transcript Feed Mode */
           <>
             <TranscriptArea
               messages={messages}
@@ -455,19 +471,19 @@ export default function App() {
               onOpenNewTopic={() => setIsNewTopicModalOpen(true)}
               onFinishTopic={handleFinishTopic}
               evaluation={evaluation}
-              onPlayMessageAudio={speakText}
+              onPlayMessageAudio={(txt) => speakText(txt)}
               onRetryTopic={handleRetryTopic}
             />
 
-            {/* Input Bar (with Dictation and typing) */}
+            {/* Input Bar */}
             <InputBar
               onSendMessage={handleSendMessage}
               onFinishTopic={handleFinishTopic}
               isLoading={isLoading}
               activeTopic={activeTopic}
               onOpenNewTopic={() => setIsNewTopicModalOpen(true)}
-              isListening={isListening}
-              setIsListening={setIsListening}
+              isListening={voiceHook.isListening}
+              setIsListening={voiceHook.setIsListening}
             />
           </>
         )}

@@ -28,12 +28,12 @@ Você é o Tutor de Voz e Parceiro de Estudos Interativo do aplicativo "Conversa
 O usuário é um estudante praticando a Técnica de Feynman: ele assume o papel de professor e explica uma matéria para você em tempo real por voz.
 
 COMO VOCÊ SE COMPORTA DURANTE A EXPLICAÇÃO:
-1. Respostas Curtas e Naturais para Voz (PT-BR):
-   - Fale como um interlocutor humano atento, amigável, inteligente e tecnicamente afiado.
-   - Mantenha cada turno com 2 a 4 frases curtas e fluidas, ideais para serem lidas em voz alta pelo sintetizador de voz (TTS).
-   - Nunca use listas gigantescas ou formatação pesada durante o bate-papo de voz.
+1. Respostas Curtas, Dinâmicas e Naturais para Voz (PT-BR):
+   - Fale como um parceiro de estudos atento, amigável, inteligente e tecnicamente preciso.
+   - Mantenha cada turno com 2 a 3 frases curtas e fluidas, ideais para serem lidas em voz alta pelo sintetizador de voz (TTS).
+   - NUNCA envie listas gigantescas ou formatação pesada durante o bate-papo de voz.
 2. Intervenção Dinâmica e Interativa:
-   - Se o usuário explicar algo CORRETO: valide brevemente e faça uma pergunta de aprofundamento instigante sobre o tema para testar se ele realmente domina as nuances (ex: "Exato! E quanto aos sujeitos do crime, um particular em concurso pode responder?").
+   - Se o usuário explicar algo CORRETO: valide brevemente e faça UMA pergunta de aprofundamento instigante sobre o tema para testar se ele realmente domina as nuances (ex: "Muito bom! E sobre os sujeitos do crime, um particular em concurso pode responder por abuso de autoridade?").
    - Se o usuário cometer um ERRO CONCEITUAL ou usar termos errados: CORRIJA IMEDIATAMENTE de forma clara, educada e direta, citando a regra correta e incentivando-o a continuar (ex: "Atenção a um ponto importante: a divergência na interpretação da lei NÃO configura abuso de autoridade, lembra do art. 1º, § 2º? Continue, como ficam as penas?").
 3. ENCERRAMENTO E AVALIAÇÃO FINAL (ação 'finish' ou quando o usuário disser que terminou/encerrou):
    - Avalie com rigor e honestidade técnica todo o conteúdo explicado.
@@ -68,6 +68,63 @@ Para turno de finalização/avaliação:
   }
 }
 `;
+
+const MODELS_TO_TRY = ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.8-flash'];
+
+async function generateWithFallback(
+  genAi: GoogleGenAI,
+  prompt: string,
+  systemPrompt: string
+): Promise<{ text: string; modelUsed: string }> {
+  let lastError: any = null;
+
+  for (const model of MODELS_TO_TRY) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const config: any = {
+          systemInstruction: systemPrompt,
+          temperature: 0.3,
+          responseMimeType: 'application/json',
+        };
+
+        if (model.startsWith('gemini-3')) {
+          config.thinkingConfig = {
+            thinkingLevel: 'MINIMAL',
+          };
+        }
+
+        const response = await genAi.models.generateContent({
+          model,
+          contents: prompt,
+          config,
+        });
+
+        const text = response.text?.trim() || '';
+        if (text) {
+          return { text, modelUsed: model };
+        }
+      } catch (err: any) {
+        lastError = err;
+        const msg = err?.message || String(err);
+        const is404 = msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('no longer available');
+        const is503 = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand');
+
+        console.warn(`[Conversa AI local] Modelo ${model} tentativa ${attempt} falhou: ${msg.slice(0, 120)}`);
+
+        if (is404) {
+          break;
+        }
+
+        if (is503 && attempt === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          continue;
+        }
+      }
+    }
+  }
+
+  throw lastError || new Error('Não foi possível obter resposta de nenhum modelo disponível.');
+}
 
 function extractJson(text: string): any {
   if (!text) return null;
@@ -154,41 +211,22 @@ Sua tarefa:
 - Ouça atentamente.
 - Se houver erro conceitual ou jargão equivocado: corrija imediatamente em 2 frases ("interlocutionType": "correction").
 - Se estiver correto: valide brevemente e faça UMA pergunta estimulante para aprofundar ("interlocutionType": "question").
-- Resposta curta (2 a 4 frases) para áudio TTS.
+- Resposta curta (2 a 3 frases) para áudio TTS.
 Retorne em JSON CHAT.`,
         ];
       }
     }
 
-    const modelsToTry = ['gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-2.0-flash'];
-    let lastError: any = null;
-    let responseText = '';
-
-    for (const modelName of modelsToTry) {
-      try {
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: promptContents.join('\n\n'),
-          config: {
-            systemInstruction: SYSTEM_PROMPT,
-            temperature: 0.3,
-            responseMimeType: 'application/json',
-          },
-        });
-        responseText = response.text?.trim() || '';
-        if (responseText) break;
-      } catch (err: any) {
-        lastError = err;
-      }
-    }
-
-    if (!responseText && lastError) {
-      throw lastError;
-    }
+    const { text: responseText, modelUsed } = await generateWithFallback(
+      ai,
+      promptContents.join('\n\n'),
+      SYSTEM_PROMPT
+    );
 
     const parsedJson = extractJson(responseText);
 
     if (parsedJson) {
+      parsedJson._model = modelUsed;
       return res.json(parsedJson);
     }
 
@@ -197,6 +235,7 @@ Retorne em JSON CHAT.`,
       interlocutionType: 'question',
       spokenFeedback: responseText || 'Muito interessante. Continue sua explicação!',
       detectedCorrection: null,
+      _model: modelUsed,
     });
   } catch (error: any) {
     console.error('Erro na avaliação local:', error);

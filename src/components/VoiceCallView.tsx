@@ -6,11 +6,11 @@ import {
   HelpCircle, 
   Sparkles, 
   AlertTriangle, 
-  CheckCircle2, 
   Send,
-  Volume2,
   StopCircle,
-  MessageSquare
+  MessageSquare,
+  Zap,
+  Clock
 } from 'lucide-react';
 import { ChatMessage, TopicEvaluation } from '../types';
 import { VoiceVisualizer } from './VoiceVisualizer';
@@ -28,6 +28,11 @@ interface VoiceCallViewProps {
   onFinishTopic: () => void;
   evaluation: TopicEvaluation | null;
   currentTranscript: string;
+  interimTranscript?: string;
+  silenceCountdown?: number | null;
+  autoSendEnabled: boolean;
+  onToggleAutoSend: () => void;
+  onManualSend: () => void;
   onRetryTopic?: () => void;
   onSwitchToChat: () => void;
 }
@@ -44,13 +49,15 @@ export const VoiceCallView: React.FC<VoiceCallViewProps> = ({
   onFinishTopic,
   evaluation,
   currentTranscript,
+  interimTranscript = '',
+  silenceCountdown = null,
+  autoSendEnabled,
+  onToggleAutoSend,
+  onManualSend,
   onRetryTopic,
   onSwitchToChat,
 }) => {
-  // Last AI message
   const lastAiMessage = [...messages].reverse().find((m) => m.role === 'assistant');
-  // Last user message
-  const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user');
 
   if (evaluation) {
     return (
@@ -65,32 +72,51 @@ export const VoiceCallView: React.FC<VoiceCallViewProps> = ({
     );
   }
 
+  // Active combined speech
+  const speechPreview = (currentTranscript + (interimTranscript ? ` ${interimTranscript}` : '')).trim();
+
   return (
     <div className="flex-1 flex flex-col justify-between items-center p-4 sm:p-6 max-w-3xl mx-auto w-full relative">
-      {/* Top Session Pill */}
+      {/* Top Session & Mode Bar */}
       <div className="w-full flex items-center justify-between gap-3 bg-stone-900/80 border border-stone-800 rounded-2xl px-4 py-2.5 backdrop-blur shadow-sm">
         <div className="flex items-center gap-2 overflow-hidden">
           <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
           <span className="text-[11px] font-mono uppercase text-emerald-400 font-bold shrink-0">
-            Tópico Ativo:
+            Explicando:
           </span>
           <span className="text-xs sm:text-sm font-semibold text-white truncate">
             {topic}
           </span>
         </div>
 
-        <button
-          onClick={onSwitchToChat}
-          className="text-xs text-stone-400 hover:text-white flex items-center gap-1.5 px-2.5 py-1 rounded-lg hover:bg-stone-800 transition-colors shrink-0 cursor-pointer"
-          title="Ver transcrição completa da conversa"
-        >
-          <MessageSquare className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">Ver Transcrição</span>
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Toggle Auto-Send / Hands-Free mode */}
+          <button
+            onClick={onToggleAutoSend}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors cursor-pointer ${
+              autoSendEnabled
+                ? 'bg-emerald-950/60 border-emerald-600/40 text-emerald-300'
+                : 'bg-stone-900 border-stone-800 text-stone-400 hover:text-stone-200'
+            }`}
+            title="Envio automático quando você faz uma pausa na fala"
+          >
+            <Zap className="w-3 h-3 text-emerald-400" />
+            <span className="hidden sm:inline">Conversa Automática</span>
+          </button>
+
+          <button
+            onClick={onSwitchToChat}
+            className="text-xs text-stone-400 hover:text-white flex items-center gap-1.5 px-2.5 py-1 rounded-lg hover:bg-stone-800 transition-colors cursor-pointer"
+            title="Ver transcrição completa da conversa"
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Transcrição</span>
+          </button>
+        </div>
       </div>
 
       {/* Center: Glowing Visualizer Orb */}
-      <div className="my-auto flex flex-col items-center justify-center py-6 sm:py-8 w-full">
+      <div className="my-auto flex flex-col items-center justify-center py-4 sm:py-6 w-full">
         <VoiceVisualizer
           isListening={isListening}
           isSpeaking={isSpeaking}
@@ -99,33 +125,56 @@ export const VoiceCallView: React.FC<VoiceCallViewProps> = ({
           size="lg"
         />
 
-        {/* Live Audio Transcription / Speech Bubble */}
-        <div className="w-full max-w-xl mt-6 space-y-3">
-          {/* If user is actively speaking or typed interim */}
-          {currentTranscript ? (
-            <div className="p-4 rounded-2xl bg-stone-900/90 border border-emerald-500/40 text-stone-100 shadow-xl space-y-1 animate-in fade-in">
-              <span className="text-[10px] font-mono uppercase text-emerald-400 font-semibold block">
-                Você falando agora:
-              </span>
+        {/* Live Subtitle Area */}
+        <div className="w-full max-w-xl mt-5 space-y-3">
+          {/* Active User Speech Box with countdown */}
+          {speechPreview ? (
+            <div className="p-4 sm:p-5 rounded-2xl bg-stone-900/95 border border-emerald-500/50 text-stone-100 shadow-2xl space-y-2 animate-in fade-in backdrop-blur">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-[10px] font-mono uppercase text-emerald-400 font-bold flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  Você falando:
+                </span>
+
+                {silenceCountdown !== null && (
+                  <span className="text-[11px] font-mono text-cyan-300 bg-cyan-950/80 border border-cyan-700/60 px-2 py-0.5 rounded-full flex items-center gap-1">
+                    <Clock className="w-3 h-3 text-cyan-400" />
+                    Enviando em {silenceCountdown}s...
+                  </span>
+                )}
+              </div>
+
               <p className="text-sm sm:text-base leading-relaxed text-white font-medium">
-                "{currentTranscript}"
+                "{speechPreview}"
               </p>
+
+              {/* Immediate send or cancel bar */}
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-stone-800">
+                <button
+                  onClick={onManualSend}
+                  className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-stone-950 text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors shadow"
+                >
+                  <Send className="w-3 h-3" />
+                  <span>Enviar Agora</span>
+                </button>
+              </div>
             </div>
           ) : lastAiMessage ? (
-            <div className="p-4 sm:p-5 rounded-2xl bg-stone-900/90 border border-stone-800 text-stone-200 shadow-xl space-y-2 backdrop-blur">
+            /* AI Last Spoken Response Bubble */
+            <div className="p-4 sm:p-5 rounded-2xl bg-stone-900/90 border border-stone-800 text-stone-200 shadow-xl space-y-2.5 backdrop-blur">
               <div className="flex items-center justify-between text-xs">
-                <span className="text-[10px] font-mono uppercase font-bold flex items-center gap-1 text-cyan-400">
-                  <Sparkles className="w-3 h-3 text-cyan-400" />
-                  IA Respondendo
+                <span className="text-[10px] font-mono uppercase font-bold flex items-center gap-1.5 text-cyan-400">
+                  <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                  Tutor IA Respondendo
                 </span>
 
                 {isSpeaking && (
                   <button
                     onClick={onStopSpeaking}
-                    className="text-[11px] text-stone-400 hover:text-rose-400 flex items-center gap-1 cursor-pointer"
+                    className="text-[11px] text-stone-400 hover:text-rose-400 flex items-center gap-1 cursor-pointer px-2 py-0.5 rounded bg-stone-950 border border-stone-800"
                   >
-                    <StopCircle className="w-3.5 h-3.5" />
-                    <span>Silenciar voz</span>
+                    <StopCircle className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Silenciar fala</span>
                   </button>
                 )}
               </div>
@@ -144,13 +193,13 @@ export const VoiceCallView: React.FC<VoiceCallViewProps> = ({
                 </div>
               )}
 
-              <p className="text-sm sm:text-base leading-relaxed text-stone-100">
+              <p className="text-sm sm:text-base leading-relaxed text-stone-100 font-sans">
                 {lastAiMessage.text}
               </p>
             </div>
           ) : (
             <div className="p-4 rounded-2xl bg-stone-950/60 border border-stone-800/60 text-center text-stone-400 text-xs sm:text-sm">
-              Comece a falar explicando a matéria. A IA vai te ouvir, interagir e avaliar.
+              Comece a falar explicando a matéria. A IA te ouve, responde por voz e faz perguntas.
             </div>
           )}
         </div>
@@ -176,7 +225,7 @@ export const VoiceCallView: React.FC<VoiceCallViewProps> = ({
           </button>
         </div>
 
-        {/* Main Mic & Finalize Action Bar */}
+        {/* Main Action Bar */}
         <div className="flex items-center justify-between gap-3 bg-stone-900/90 border border-stone-800 p-2.5 sm:p-3 rounded-2xl shadow-xl backdrop-blur">
           {/* Mic Toggle Button */}
           <button
@@ -199,19 +248,6 @@ export const VoiceCallView: React.FC<VoiceCallViewProps> = ({
               </>
             )}
           </button>
-
-          {/* Send Pending Speech Button (if speech is waiting) */}
-          {currentTranscript && (
-            <button
-              onClick={() => onSendMessage(currentTranscript)}
-              disabled={isLoading}
-              className="px-3.5 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-stone-950 font-bold text-xs flex items-center gap-1.5 transition-all shadow-md cursor-pointer shrink-0"
-              title="Enviar fala para a IA responder"
-            >
-              <Send className="w-3.5 h-3.5" />
-              <span>Enviar Fala</span>
-            </button>
-          )}
 
           {/* Finish & Get Grade Button */}
           <button
