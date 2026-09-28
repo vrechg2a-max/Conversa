@@ -3,44 +3,70 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Header } from './components/Header';
 import { TranscriptArea } from './components/TranscriptArea';
 import { InputBar } from './components/InputBar';
-import { TopicModal } from './components/TopicModal';
-import { SessionHistoryModal } from './components/SessionHistoryModal';
-import { ChatMessage, ExamBoard, SessionData } from './types';
-import { playInterruptionBeep, speakExaminer, stopSpeaking } from './utils/audio';
+import { VoiceCallView } from './components/VoiceCallView';
+import { NewTopicModal } from './components/NewTopicModal';
+import { TopicHistoryModal } from './components/TopicHistoryModal';
+import { ChatMessage, SavedTopicSession, TopicEvaluation } from './types';
+import { voice, sounds } from './utils/audio';
 
-const STORAGE_KEY_SESSIONS = 'banca_examinadora_sessions_v1';
-const STORAGE_KEY_TTS = 'banca_examinadora_tts_enabled';
-const STORAGE_KEY_SOUND = 'banca_examinadora_sound_enabled';
+const STORAGE_KEY_SESSIONS = 'conversa_ai_topics_v2';
+const STORAGE_KEY_TTS = 'conversa_ai_tts_enabled';
+const STORAGE_KEY_VOICE_RATE = 'conversa_ai_voice_rate';
 
 export default function App() {
   const [activeTopic, setActiveTopic] = useState<string | null>(null);
-  const [activeBoard, setActiveBoard] = useState<ExamBoard>('Cebraspe');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [finalReport, setFinalReport] = useState<string | null>(null);
+  const [evaluation, setEvaluation] = useState<TopicEvaluation | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 
+  // View mode: 'call' (interactive glowing orb) or 'chat' (full transcript feed)
+  const [viewMode, setViewMode] = useState<'call' | 'chat'>('call');
+
+  // Voice Interaction state
+  const [isListening, setIsListening] = useState<boolean>(false);
+  const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
+  const [currentTranscript, setCurrentTranscript] = useState<string>('');
+
   // Modals
-  const [isTopicModalOpen, setIsTopicModalOpen] = useState(false);
+  const [isNewTopicModalOpen, setIsNewTopicModalOpen] = useState(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
 
   // Settings
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(() => {
-    return localStorage.getItem(STORAGE_KEY_TTS) === 'true';
-  });
-  const [soundAlertsEnabled, setSoundAlertsEnabled] = useState<boolean>(() => {
-    return localStorage.getItem(STORAGE_KEY_SOUND) !== 'false';
+    const saved = localStorage.getItem(STORAGE_KEY_TTS);
+    return saved !== null ? saved === 'true' : true; // Default ON for voice app
   });
 
-  // Saved sessions
-  const [savedSessions, setSavedSessions] = useState<SessionData[]>(() => {
+  const [voiceRate, setVoiceRate] = useState<number>(() => {
+    const saved = localStorage.getItem(STORAGE_KEY_VOICE_RATE);
+    return saved ? parseFloat(saved) : 1.05;
+  });
+
+  // Saved topics history
+  const [savedSessions, setSavedSessions] = useState<SavedTopicSession[]>(() => {
     try {
       const data = localStorage.getItem(STORAGE_KEY_SESSIONS);
-      return data ? JSON.parse(data) : [];
+      if (data) return JSON.parse(data);
+      // Legacy migration check
+      const oldData = localStorage.getItem('banca_examinadora_sessions_v1');
+      if (oldData) {
+        const parsedOld = JSON.parse(oldData);
+        return parsedOld.map((o: any) => ({
+          id: o.id || Date.now().toString(),
+          topic: o.topic || 'Tópico de Estudo',
+          date: o.date || new Date().toLocaleDateString('pt-BR'),
+          updatedAt: new Date().toISOString(),
+          messages: o.messages || [],
+          interruptionCount: o.interruptionCount || 0,
+          attemptsCount: 1,
+        }));
+      }
+      return [];
     } catch {
       return [];
     }
@@ -52,15 +78,14 @@ export default function App() {
   }, [ttsEnabled]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_SOUND, String(soundAlertsEnabled));
-  }, [soundAlertsEnabled]);
+    localStorage.setItem(STORAGE_KEY_VOICE_RATE, String(voiceRate));
+  }, [voiceRate]);
 
-  // Persist sessions
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_SESSIONS, JSON.stringify(savedSessions));
   }, [savedSessions]);
 
-  // Format date helper
+  // Date formatter
   const getFormattedDate = () => {
     return new Date().toLocaleString('pt-BR', {
       day: '2-digit',
@@ -71,14 +96,35 @@ export default function App() {
     });
   };
 
-  // Open topic action
-  const handleOpenTopic = async (topic: string, board: ExamBoard) => {
-    stopSpeaking();
+  // Helper to speak with TTS
+  const speakText = (text: string) => {
+    if (!ttsEnabled) return;
+    setIsSpeaking(true);
+    voice.speak(text, {
+      rate: voiceRate,
+      onStart: () => setIsSpeaking(true),
+      onEnd: () => setIsSpeaking(false),
+      onError: () => setIsSpeaking(false),
+    });
+  };
+
+  // Stop speaking
+  const handleStopSpeaking = () => {
+    voice.stop();
+    setIsSpeaking(false);
+  };
+
+  // Open Topic
+  const handleOpenTopic = async (topic: string) => {
+    handleStopSpeaking();
+    sounds.playStartChime();
+
     setIsLoading(true);
     setActiveTopic(topic);
-    setActiveBoard(board);
-    setFinalReport(null);
+    setEvaluation(null);
     setMessages([]);
+    setCurrentTranscript('');
+    setViewMode('call'); // Start in immersive voice call mode
 
     const sessionId = Date.now().toString();
     setCurrentSessionId(sessionId);
@@ -90,66 +136,53 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           topic,
-          board,
           action: 'open',
-          currentDate: dateStr,
         }),
       });
 
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Erro ao registrar tópico na banca');
-      }
+      const welcomeText =
+        data.spokenFeedback ||
+        `Excelente escolha! Pode começar a me explicar ${topic} quando quiser. Estou ouvindo com atenção.`;
 
       const openingMsg: ChatMessage = {
         id: 'msg-' + Date.now(),
-        role: 'model',
-        text: data.text || `[TÓPICO ABERTO: ${topic} | DATA: ${dateStr} | BANCA: ${board}]\nTópico registrado. Pode começar a explicação.`,
+        role: 'assistant',
+        text: welcomeText,
         timestamp: dateStr,
-        turnType: 'OPENING',
-        topic,
-        board,
+        interlocutionType: 'encouragement',
       };
 
       setMessages([openingMsg]);
-
-      if (ttsEnabled) {
-        speakExaminer("Tópico registrado. Pode começar a explicação.");
-      }
+      speakText(welcomeText);
     } catch (err: any) {
-      console.error('Erro na abertura:', err);
-      // Fallback local opening adhering to exact rule
+      console.warn('Fallback abertura local:', err);
+      const fallbackText = `Excelente escolha! Pode começar a me explicar ${topic} quando quiser. Estou ouvindo com atenção.`;
       const fallbackMsg: ChatMessage = {
         id: 'msg-' + Date.now(),
-        role: 'model',
-        text: `[TÓPICO ABERTO: ${topic} | DATA: ${dateStr} | BANCA: ${board}]\nTópico registrado. Pode começar a explicação.`,
+        role: 'assistant',
+        text: fallbackText,
         timestamp: dateStr,
-        turnType: 'OPENING',
-        topic,
-        board,
+        interlocutionType: 'encouragement',
       };
       setMessages([fallbackMsg]);
-      if (ttsEnabled) {
-        speakExaminer("Tópico registrado. Pode começar a explicação.");
-      }
+      speakText(fallbackText);
     } finally {
       setIsLoading(false);
+      // Automatically prompt mic so user can talk
+      setIsListening(true);
     }
   };
 
-  // Send explanation message
+  // Send message
   const handleSendMessage = async (text: string) => {
+    if (!text.trim() || isLoading) return;
+
+    handleStopSpeaking();
+    setCurrentTranscript('');
+
     if (!activeTopic) {
-      // If user typed "Vou falar sobre X", extract and open topic
-      const lower = text.toLowerCase();
-      if (lower.startsWith('vou falar sobre') || lower.startsWith('tema:')) {
-        const extracted = text.replace(/^(vou falar sobre|tema:)/i, '').trim();
-        if (extracted) {
-          handleOpenTopic(extracted, activeBoard);
-          return;
-        }
-      }
-      setIsTopicModalOpen(true);
+      handleOpenTopic(text.trim());
       return;
     }
 
@@ -157,7 +190,7 @@ export default function App() {
     const userMsg: ChatMessage = {
       id: 'msg-u-' + Date.now(),
       role: 'user',
-      text,
+      text: text.trim(),
       timestamp,
     };
 
@@ -171,73 +204,86 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           topic: activeTopic,
-          board: activeBoard,
           action: 'message',
-          userMessage: text,
+          userMessage: text.trim(),
           history: updatedMessages.map((m) => ({
             role: m.role,
             text: m.text,
-            turnType: m.turnType,
           })),
         }),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Erro no retorno da banca');
+        throw new Error(data.error || 'Erro na resposta do tutor');
       }
 
-      const modelMsg: ChatMessage = {
-        id: 'msg-m-' + Date.now(),
-        role: 'model',
-        text: data.text,
-        timestamp: getFormattedDate(),
-        turnType: data.turnType,
-      };
+      if (data.type === 'EVALUATION' && data.evaluation) {
+        // Final evaluation triggered by words like "encerrei"
+        const reportMsg: ChatMessage = {
+          id: 'msg-eval-' + Date.now(),
+          role: 'assistant',
+          text: data.spokenFeedback || 'Avaliação final gerada com sucesso!',
+          timestamp: getFormattedDate(),
+          interlocutionType: 'evaluation',
+          evaluation: data.evaluation,
+        };
 
-      const finalMessages = [...updatedMessages, modelMsg];
-      setMessages(finalMessages);
+        const finalMessages = [...updatedMessages, reportMsg];
+        setMessages(finalMessages);
+        setEvaluation(data.evaluation);
+        saveSessionToStorage(finalMessages, data.evaluation);
+        sounds.playGradeFanfare();
+        speakText(data.spokenFeedback || 'Parabéns por concluir sua explicação!');
+        setIsListening(false);
+      } else {
+        // Normal conversation turn
+        const aiReply = data.spokenFeedback || data.text || 'Entendido. Prossiga com sua explicação!';
+        const interlocutionType = data.interlocutionType || 'question';
 
-      // Handle Interruption / Alert
-      if (data.turnType === 'INTERRUPTION') {
-        if (soundAlertsEnabled) {
-          playInterruptionBeep();
+        const aiMsg: ChatMessage = {
+          id: 'msg-ai-' + Date.now(),
+          role: 'assistant',
+          text: aiReply,
+          timestamp: getFormattedDate(),
+          interlocutionType,
+          detectedCorrection: data.detectedCorrection,
+        };
+
+        const finalMessages = [...updatedMessages, aiMsg];
+        setMessages(finalMessages);
+
+        if (interlocutionType === 'correction') {
+          sounds.playCorrectionPing();
         }
-        if (ttsEnabled) {
-          speakExaminer(data.text);
-        }
-      } else if (data.turnType === 'CORRECT_PROCEED') {
-        if (ttsEnabled) {
-          speakExaminer(data.text);
-        }
-      } else if (data.turnType === 'EVALUATION') {
-        setFinalReport(data.text);
-        saveSessionToStorage(finalMessages, data.text);
-        if (ttsEnabled) {
-          speakExaminer("Avaliação de retenção concluída. Relatório estruturado emitido.");
-        }
+
+        speakText(aiReply);
       }
     } catch (err: any) {
-      console.error('Erro na avaliação:', err);
-      const errorMsg: ChatMessage = {
+      console.error('Erro na resposta:', err);
+      const errMsg: ChatMessage = {
         id: 'msg-err-' + Date.now(),
-        role: 'model',
-        text: 'Interrupção de comunicação com o servidor de avaliação: ' + (err.message || 'Erro inesperado.'),
+        role: 'assistant',
+        text: 'Não consegui processar essa fala agora: ' + (err?.message || 'Tente novamente.'),
         timestamp: getFormattedDate(),
-        turnType: 'INTERRUPTION',
+        interlocutionType: 'correction',
       };
-      setMessages([...updatedMessages, errorMsg]);
+      setMessages([...updatedMessages, errMsg]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Explicitly finish topic and trigger final report
+  // Explicitly finish topic and trigger final grade
   const handleFinishTopic = async () => {
     if (!activeTopic || isLoading) return;
 
+    handleStopSpeaking();
+    setIsListening(false);
+    setCurrentTranscript('');
+
     const timestamp = getFormattedDate();
-    const finishPrompt = "Encerrei minha explicação sobre o tema.";
+    const finishPrompt = 'Encerrei minha explicação sobre o tema. Pode avaliar meu desempenho e dar a nota com observações.';
     const userMsg: ChatMessage = {
       id: 'msg-finish-u-' + Date.now(),
       role: 'user',
@@ -255,38 +301,48 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           topic: activeTopic,
-          board: activeBoard,
           action: 'finish',
           userMessage: finishPrompt,
           history: updatedMessages.map((m) => ({
             role: m.role,
             text: m.text,
-            turnType: m.turnType,
           })),
         }),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Erro ao gerar relatório final');
+        throw new Error(data.error || 'Erro ao gerar avaliação final');
       }
 
+      const evalData: TopicEvaluation = data.evaluation || {
+        grade: 8.0,
+        gradeLevel: 'Domínio Avançado',
+        whatWentWrong: ['Nenhum equívoco grave identificado.'],
+        whatToImprove: ['Aprofundar os desdobramentos práticos da matéria.'],
+        strengths: ['Boa estrutura geral e clareza na exposição oral.'],
+        summary: `Resumo do tópico ${activeTopic}: conceitos explicados com clareza oral.`,
+      };
+
+      const spoken =
+        data.spokenFeedback ||
+        `Parabéns por concluir sua explicação sobre ${activeTopic}! Sua nota foi ${evalData.grade.toFixed(1)}. Veja suas observações no relatório.`;
+
       const reportMsg: ChatMessage = {
-        id: 'msg-m-' + Date.now(),
-        role: 'model',
-        text: data.text,
+        id: 'msg-eval-' + Date.now(),
+        role: 'assistant',
+        text: spoken,
         timestamp: getFormattedDate(),
-        turnType: 'EVALUATION',
+        interlocutionType: 'evaluation',
+        evaluation: evalData,
       };
 
       const finalMessages = [...updatedMessages, reportMsg];
       setMessages(finalMessages);
-      setFinalReport(data.text);
-      saveSessionToStorage(finalMessages, data.text);
-
-      if (ttsEnabled) {
-        speakExaminer("Avaliação de retenção concluída. Relatório emitido.");
-      }
+      setEvaluation(evalData);
+      saveSessionToStorage(finalMessages, evalData);
+      sounds.playGradeFanfare();
+      speakText(spoken);
     } catch (err: any) {
       console.error('Erro ao finalizar:', err);
     } finally {
@@ -294,47 +350,51 @@ export default function App() {
     }
   };
 
-  // Helper to save session into state and localStorage
-  const saveSessionToStorage = (allMessages: ChatMessage[], reportText: string) => {
+  // Save session in storage organized by topic
+  const saveSessionToStorage = (allMessages: ChatMessage[], evalData: TopicEvaluation) => {
     if (!activeTopic) return;
 
-    let diagnostic: 'Superficial' | 'Mediana' | 'Aprofundada' | 'Pendente' = 'Pendente';
-    const lower = reportText.toLowerCase();
-    if (lower.includes('superficial')) diagnostic = 'Superficial';
-    else if (lower.includes('mediana')) diagnostic = 'Mediana';
-    else if (lower.includes('aprofundada')) diagnostic = 'Aprofundada';
+    const interruptionsCount = allMessages.filter((m) => m.interlocutionType === 'correction').length;
 
-    const interruptionsCount = allMessages.filter((m) => m.turnType === 'INTERRUPTION').length;
-
-    const newSession: SessionData = {
+    const newSession: SavedTopicSession = {
       id: currentSessionId || Date.now().toString(),
       topic: activeTopic,
-      board: activeBoard,
       date: getFormattedDate(),
+      updatedAt: new Date().toISOString(),
       messages: allMessages,
-      finalReport: reportText,
-      diagnostic,
+      evaluation: evalData,
       interruptionCount: interruptionsCount,
+      attemptsCount: 1,
     };
 
     setSavedSessions((prev) => {
-      const existsIndex = prev.findIndex((s) => s.id === newSession.id);
-      if (existsIndex >= 0) {
+      const idx = prev.findIndex((s) => s.id === newSession.id || s.topic.toLowerCase() === activeTopic.toLowerCase());
+      if (idx >= 0) {
         const copy = [...prev];
-        copy[existsIndex] = newSession;
+        copy[idx] = {
+          ...newSession,
+          attemptsCount: (copy[idx].attemptsCount || 1) + 1,
+        };
         return copy;
       }
       return [newSession, ...prev];
     });
   };
 
+  // Re-try / Re-explain the same topic to improve grade
+  const handleRetryTopic = () => {
+    if (activeTopic) {
+      handleOpenTopic(activeTopic);
+    }
+  };
+
   // Select session from history
-  const handleSelectSession = (session: SessionData) => {
+  const handleSelectSession = (session: SavedTopicSession) => {
     setActiveTopic(session.topic);
-    setActiveBoard(session.board);
     setMessages(session.messages);
-    setFinalReport(session.finalReport || null);
+    setEvaluation(session.evaluation || null);
     setCurrentSessionId(session.id);
+    setViewMode(session.evaluation ? 'chat' : 'call');
   };
 
   // Delete session
@@ -342,62 +402,87 @@ export default function App() {
     setSavedSessions((prev) => prev.filter((s) => s.id !== id));
   };
 
-  // Clear all sessions
+  // Clear all
   const handleClearAllSessions = () => {
     setSavedSessions([]);
   };
 
   return (
-    <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans selection:bg-amber-600/30 selection:text-amber-200">
+    <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans selection:bg-emerald-600/30 selection:text-emerald-200">
       {/* Top Header */}
       <Header
-        currentBoard={activeBoard}
         activeTopic={activeTopic}
         ttsEnabled={ttsEnabled}
         onToggleTts={() => {
-          if (ttsEnabled) stopSpeaking();
+          if (ttsEnabled) handleStopSpeaking();
           setTtsEnabled(!ttsEnabled);
         }}
-        soundAlertsEnabled={soundAlertsEnabled}
-        onToggleSoundAlerts={() => setSoundAlertsEnabled(!soundAlertsEnabled)}
-        onOpenNewTopic={() => setIsTopicModalOpen(true)}
+        voiceRate={voiceRate}
+        onChangeVoiceRate={setVoiceRate}
+        onOpenNewTopic={() => setIsNewTopicModalOpen(true)}
         onOpenHistory={() => setIsHistoryModalOpen(true)}
         savedSessionsCount={savedSessions.length}
+        viewMode={viewMode}
+        onToggleViewMode={() => setViewMode(viewMode === 'call' ? 'chat' : 'call')}
       />
 
       {/* Main Conversation & Evaluation Area */}
       <main className="flex-1 flex flex-col overflow-hidden relative">
-        <TranscriptArea
-          messages={messages}
-          activeTopic={activeTopic}
-          activeBoard={activeBoard}
-          isLoading={isLoading}
-          onOpenNewTopic={() => setIsTopicModalOpen(true)}
-          onFinishTopic={handleFinishTopic}
-          finalReport={finalReport}
-        />
+        {activeTopic && viewMode === 'call' && !evaluation ? (
+          /* Voice Call Mode (Glowing Visualizer Orb & Real-time Live Interaction) */
+          <VoiceCallView
+            topic={activeTopic}
+            messages={messages}
+            isListening={isListening}
+            onToggleListening={() => setIsListening(!isListening)}
+            isSpeaking={isSpeaking}
+            onStopSpeaking={handleStopSpeaking}
+            isLoading={isLoading}
+            onSendMessage={handleSendMessage}
+            onFinishTopic={handleFinishTopic}
+            evaluation={evaluation}
+            currentTranscript={currentTranscript}
+            onRetryTopic={handleRetryTopic}
+            onSwitchToChat={() => setViewMode('chat')}
+          />
+        ) : (
+          /* Chat & Transcript Mode */
+          <>
+            <TranscriptArea
+              messages={messages}
+              activeTopic={activeTopic}
+              isLoading={isLoading}
+              onOpenNewTopic={() => setIsNewTopicModalOpen(true)}
+              onFinishTopic={handleFinishTopic}
+              evaluation={evaluation}
+              onPlayMessageAudio={speakText}
+              onRetryTopic={handleRetryTopic}
+            />
 
-        {/* Input & Dictation Area */}
-        <InputBar
-          onSendMessage={handleSendMessage}
-          onFinishTopic={handleFinishTopic}
-          isLoading={isLoading}
-          activeTopic={activeTopic}
-          onOpenNewTopic={() => setIsTopicModalOpen(true)}
-        />
+            {/* Input Bar (with Dictation and typing) */}
+            <InputBar
+              onSendMessage={handleSendMessage}
+              onFinishTopic={handleFinishTopic}
+              isLoading={isLoading}
+              activeTopic={activeTopic}
+              onOpenNewTopic={() => setIsNewTopicModalOpen(true)}
+              isListening={isListening}
+              setIsListening={setIsListening}
+            />
+          </>
+        )}
       </main>
 
       {/* New Topic Opening Modal */}
-      <TopicModal
-        isOpen={isTopicModalOpen}
-        onClose={() => setIsTopicModalOpen(false)}
+      <NewTopicModal
+        isOpen={isNewTopicModalOpen}
+        onClose={() => setIsNewTopicModalOpen(false)}
         onSubmit={handleOpenTopic}
         initialTopic={activeTopic || ''}
-        initialBoard={activeBoard}
       />
 
-      {/* Sessions History Modal */}
-      <SessionHistoryModal
+      {/* Topic History & Saved Grades Modal */}
+      <TopicHistoryModal
         isOpen={isHistoryModalOpen}
         onClose={() => setIsHistoryModalOpen(false)}
         sessions={savedSessions}

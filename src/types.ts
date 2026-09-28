@@ -1,42 +1,77 @@
-export type ExamBoard = 
-  | 'Cebraspe' 
-  | 'FGV' 
-  | 'Vunesp' 
-  | 'FCC' 
-  | 'FEPESE' 
-  | 'Banca Oral (Magistratura/MP)';
+export interface TopicEvaluation {
+  grade: number; // 0.0 to 10.0
+  gradeLevel: 'Excelente' | 'Domínio Avançado' | 'Intermediário' | 'Superficial / Precisa Revisar';
+  whatWentWrong: string[]; // o que falou de errado / correções conceituais
+  whatToImprove: string[]; // o que precisa melhorar / lacunas
+  strengths: string[]; // o que falou certo / pontos fortes
+  summary: string; // resumo denso para fixação
+}
+
+export type InterlocutionType = 'question' | 'correction' | 'encouragement' | 'evaluation' | 'general';
 
 export interface ChatMessage {
   id: string;
-  role: 'user' | 'model';
+  role: 'user' | 'assistant';
   text: string;
   timestamp: string;
-  turnType?: 'OPENING' | 'CORRECT_PROCEED' | 'INTERRUPTION' | 'EVALUATION';
-  topic?: string;
-  board?: string;
+  interlocutionType?: InterlocutionType;
+  detectedCorrection?: string;
+  evaluation?: TopicEvaluation;
 }
 
-export interface SessionData {
+export interface SavedTopicSession {
   id: string;
   topic: string;
-  board: ExamBoard;
   date: string;
+  updatedAt: string;
   messages: ChatMessage[];
-  finalReport?: string;
-  diagnostic?: 'Superficial' | 'Mediana' | 'Aprofundada' | 'Pendente';
+  evaluation?: TopicEvaluation;
   interruptionCount: number;
+  attemptsCount: number;
 }
 
-export const POPULAR_TOPICS: { subject: string; topic: string }[] = [
-  { subject: 'Direito Penal', topic: 'Direito Penal - Teoria do Crime (Fato Típico, Ilicitude e Culpabilidade)' },
-  { subject: 'Direito Penal', topic: 'Direito Penal - Dolo Eventual versus Culpa Consciente' },
-  { subject: 'Direito Penal', topic: 'Direito Penal - Erro de Tipo e Erro de Proibição' },
-  { subject: 'Direito Constitucional', topic: 'Direito Constitucional - Controle Difuso e Concentrado de Constitucionalidade' },
-  { subject: 'Direito Constitucional', topic: 'Direito Constitucional - Remédios Constitucionais e Direitos Fundamentais' },
-  { subject: 'Direito Administrativo', topic: 'Direito Administrativo - Atos Administrativos: Elementos, Atributos e Extinção' },
-  { subject: 'Direito Administrativo', topic: 'Direito Administrativo - Responsabilidade Civil do Estado' },
-  { subject: 'Processo Penal', topic: 'Processo Penal - Cadeia de Custódia e Teoria das Provas Ilícitas' },
-  { subject: 'Direito Civil', topic: 'Direito Civil - Prescrição, Decadência e Teoria das Nulidades' },
-  { subject: 'Direito Tributário', topic: 'Direito Tributário - Imunidades e Isenções Tributárias' },
-  { subject: 'TI & Governança', topic: 'Segurança da Informação - Princípios CID (Confidencialidade, Integridade e Disponibilidade)' },
+export interface CuratedTopic {
+  title: string;
+  category: string;
+  description: string;
+  promptExample: string;
+}
+
+export const POPULAR_TOPICS: CuratedTopic[] = [
+  {
+    title: 'Lei de Abuso de Autoridade (Lei 13.869/19)',
+    category: 'Direito Penal & Legislação',
+    description: 'Sujeitos ativos, dolo específico, perda do cargo e divergência hermenêutica.',
+    promptExample: 'Vou explicar os principais pontos da Lei de Abuso de Autoridade, os sujeitos ativo e passivo e as penas.'
+  },
+  {
+    title: 'Teoria do Crime - Fato Típico, Ilicitude e Culpabilidade',
+    category: 'Direito Penal',
+    description: 'Conceito analítico tripartido, conduta, tipicidade e excludentes.',
+    promptExample: 'O crime é um fato típico, antijurídico e culpável segundo a teoria tripartida...'
+  },
+  {
+    title: 'Controle de Constitucionalidade (Difuso vs Concentrado)',
+    category: 'Direito Constitucional',
+    description: 'Ações diretas (ADI, ADC, ADO, ADPF), cláusula de reserva de plenário e efeitos.',
+    promptExample: 'Vou explicar a diferença entre o controle difuso incidental e o controle concentrado abstrato no STF.'
+  },
+  {
+    title: 'Atos Administrativos - Elementos, Atributos e Extinção',
+    category: 'Direito Administrativo',
+    description: 'Competência, finalidade, forma, motivo, objeto; autoexecutoriedade e revogação.',
+    promptExample: 'Os atos administrativos possuem requisitos essenciais e atributos como presunção de legitimidade...'
+  },
+  {
+    title: 'Responsabilidade Civil do Estado (Art. 37, § 6º da CF)',
+    category: 'Direito Administrativo',
+    description: 'Teoria do risco administrativo, condutas comissivas e omissivas do Estado.',
+    promptExample: 'A responsabilidade civil do Estado no Brasil é objetiva baseada no risco administrativo...'
+  },
+  {
+    title: 'Segurança da Informação - Princípios CID',
+    category: 'Tecnologia & Governança',
+    description: 'Confidencialidade, Integridade, Disponibilidade e não-repúdio.',
+    promptExample: 'Os pilares essenciais da segurança da informação são Confidencialidade, Integridade e Disponibilidade...'
+  }
 ];

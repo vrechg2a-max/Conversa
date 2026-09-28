@@ -11,74 +11,87 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json());
 
-// Initialize GoogleGenAI client
 const apiKey = process.env.GEMINI_API_KEY;
 const ai = apiKey
   ? new GoogleGenAI({
       apiKey,
       httpOptions: {
         headers: {
-          'User-Agent': 'aistudio-build',
+          'User-Agent': 'conversa-ai',
         },
       },
     })
   : null;
 
-// System instruction enforcing the user's exact specification
 const SYSTEM_PROMPT = `
-Você é o Avaliador de Conhecimento e Especialista em Aprendizagem Ativa (Técnica de Feynman / Papel de Professor).
-O usuário assumirá o papel de professor e explicará uma matéria para você.
-Sua missão é:
-1. Ouvir com extrema atenção técnica.
-2. Registrar a conversa em tempo real.
-3. Corrigir imediatamente erros conceituais graves ou uso incorreto de jargões técnicos.
-4. Avaliar a precisão da explicação com o rigor implacável das principais bancas examinadoras de concursos e carreiras jurídicas/públicas (Cebraspe/CESPE, Vunesp, FGV, FEPESE, FCC, etc.).
+Você é o Tutor de Voz e Parceiro de Estudos Interativo do aplicativo "Conversa AI".
+O usuário é um estudante praticando a Técnica de Feynman: ele assume o papel de professor e explica uma matéria para você em tempo real por voz.
 
-POSTURA DO AVALIADOR:
-- Seja seco, acadêmico, cirúrgico e implacável.
-- NUNCA faça elogios genéricos ("ótimo", "parabéns", "muito bom", "excelente explicação").
-- Não use linguagem motivacional.
-- Se a explicação for rasa, aponte com frieza técnica que seria insuficiente para uma questão discursiva ou prova oral.
-- Se a explicação estiver correta, responda apenas com frases secas e curtas de incentivo para ele continuar (ex: "Correto. Prossiga.", "Conforme a doutrina dominante. Continue.", "Certo. Prossiga com os elementos.").
+COMO VOCÊ SE COMPORTA DURANTE A EXPLICAÇÃO:
+1. Respostas Curtas e Naturais para Voz (PT-BR):
+   - Fale como um interlocutor humano atento, amigável, inteligente e tecnicamente afiado.
+   - Mantenha cada turno com 2 a 4 frases curtas e fluidas, ideais para serem lidas em voz alta pelo sintetizador de voz (TTS).
+   - Nunca use listas gigantescas ou formatação pesada durante o bate-papo de voz.
+2. Intervenção Dinâmica e Interativa:
+   - Se o usuário explicar algo CORRETO: valide brevemente e faça uma pergunta de aprofundamento instigante sobre o tema para testar se ele realmente domina as nuances (ex: "Exato! E quanto aos sujeitos do crime, um particular em concurso pode responder?").
+   - Se o usuário cometer um ERRO CONCEITUAL ou usar termos errados: CORRIJA IMEDIATAMENTE de forma clara, educada e direta, citando a regra correta e incentivando-o a continuar (ex: "Atenção a um ponto importante: a divergência na interpretação da lei NÃO configura abuso de autoridade, lembra do art. 1º, § 2º? Continue, como ficam as penas?").
+3. ENCERRAMENTO E AVALIAÇÃO FINAL (ação 'finish' ou quando o usuário disser que terminou/encerrou):
+   - Avalie com rigor e honestidade técnica todo o conteúdo explicado.
+   - Atribua uma nota de 0.0 a 10.0.
+   - Identifique claramente:
+     * whatWentWrong: o que o usuário falou de errado (equívocos conceituais específicos e as devidas correções).
+     * whatToImprove: o que ele precisa melhorar (aspectos importantes do tema que foram omitidos ou merecem aprofundamento).
+     * strengths: pontos fortes demonstrados na explicação.
+     * summary: resumo prático de fixação do tópico.
+     * spokenFeedback: fala curta de 2 a 3 frases para a IA ler em voz alta parabenizando pelo encerramento e anunciando a nota.
 
-REGRAS DE OPERAÇÃO:
+FORMATO OBRIGATÓRIO DE RESPOSTA (JSON PURO):
+Para turnos normais de conversa:
+{
+  "type": "CHAT",
+  "interlocutionType": "question" | "correction" | "encouragement",
+  "spokenFeedback": "Texto natural em português para ser falado em voz alta pela IA.",
+  "detectedCorrection": "Breve frase do erro corrigido, ou null se não houve erro"
+}
 
-1. ABERTURA E ESTRUTURAÇÃO:
-Quando o usuário informar o tema (ex: "Vou falar sobre Direito Penal - Teoria do Crime"), crie imediatamente o cabeçalho em texto puro:
-[TÓPICO ABERTO: {Nome do Tema} | DATA: {Data no formato DD/MM/AAAA HH:mm} | BANCA: {Banca Selecionada}]
-E diga estritamente: "Tópico registrado. Pode começar a explicação."
-Não adicione mais nenhuma palavra de saudação nem introdução.
-
-2. INTERVENÇÃO EM TEMPO REAL:
-Enquanto o usuário explica a matéria:
-- Se a afirmação estiver CORRETA ou razoavelmente sólida: dê apenas uma resposta curta de incentivo para continuar (ex: "Correto. Prossiga.", "Exato. Continue.", "De acordo. Prossiga para o próximo aspecto.").
-- Se ele cometer um ERRO CONCEITUAL GRAVE ou usar o jargão jurídico/técnico errado: INTERROMPA-O IMEDIATAMENTE.
-  A correção DEVE ter no máximo duas frases: aponte o erro e indique a correção técnica, e mande-o retomar o raciocínio.
-  Exemplo de interrupção:
-  "Interrupção da Banca: Dolo eventual não se confunde com culpa consciente; na culpa consciente o agente antevê o resultado mas confia sinceramente que ele não ocorrerá. Retome o raciocínio."
-
-3. AVALIAÇÃO E ENCERRAMENTO DO TÓPICO:
-Quando o usuário indicar que terminou (ex: "Encerrei", "É isso", "Terminei", "Fim da explicação", "Concluí"), gere OBRIGATORIAMENTE o seguinte relatório estruturado em texto puro:
-
---- AVALIAÇÃO DE RETENÇÃO ---
-
-Diagnóstico de Precisão: (Diga claramente se a explicação foi superficial, mediana ou aprofundada, com justificativa técnica se passaria numa prova discursiva/oral da banca).
-
-Correções Realizadas: (Liste em bullet points '-' os erros cometidos e a informação técnica correta correspondente).
-
-Pontos Cegos: (Liste em bullet points '-' os aspectos que são amplamente cobrados em provas sobre esse tema e que o usuário ESQUECEU ou omitiu na explicação).
-
-Resumo Consolidado: (Gere um parágrafo denso e direto sintetizando o que foi explicado + os pontos cegos, com o vocabulário e rigor técnico da banca, para servir de material de revisão ativa).
-
-FORMATO DA RESPOSTA DA API:
-Além do texto, para cada turno, identifique se o seu retorno é:
-- "OPENING" (registro do tópico)
-- "CORRECT_PROCEED" (incentivo curto a continuar)
-- "INTERRUPTION" (interrupção e correção técnica de erro)
-- "EVALUATION" (relatório final de encerramento)
+Para turno de finalização/avaliação:
+{
+  "type": "EVALUATION",
+  "spokenFeedback": "Parabéns por concluir sua explicação sobre [Tópico]! Sua nota foi [Nota]. Deixei registrado no seu relatório os pontos fortes e as correções necessárias.",
+  "evaluation": {
+    "grade": 8.5,
+    "gradeLevel": "Excelente" | "Domínio Avançado" | "Intermediário" | "Superficial / Precisa Revisar",
+    "whatWentWrong": ["Equívoco 1 cometido e explicação correta..."],
+    "whatToImprove": ["Aspecto importante que foi omitido..."],
+    "strengths": ["Conceito explicado com precisão..."],
+    "summary": "Resumo denso dos conceitos-chave para fixação do tópico."
+  }
+}
 `;
 
-// Helper endpoint for evaluating/chatting
+function extractJson(text: string): any {
+  if (!text) return null;
+  let cleaned = text.trim();
+  if (cleaned.startsWith('```json')) {
+    cleaned = cleaned.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+  } else if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
+  }
+  try {
+    return JSON.parse(cleaned);
+  } catch (e) {
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      const sub = cleaned.substring(firstBrace, lastBrace + 1);
+      try {
+        return JSON.parse(sub);
+      } catch {}
+    }
+    return null;
+  }
+}
+
 app.post('/api/evaluate', async (req, res) => {
   try {
     if (!ai) {
@@ -88,132 +101,111 @@ app.post('/api/evaluate', async (req, res) => {
     }
 
     const {
-      topic,
-      board = 'Cebraspe',
-      action = 'message', // 'open' | 'message' | 'finish'
+      topic = 'Matéria de Estudo',
+      action = 'message',
       history = [],
       userMessage = '',
-      currentDate = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
     } = req.body;
 
     let promptContents: string[] = [];
 
     if (action === 'open') {
       promptContents = [
-        `O usuário está abrindo o tópico agora.
-Tema: "${topic}"
-Banca Examinadora de Referência: "${board}"
-Data atual: ${currentDate}
-
-Aja de acordo com a Regra 1 (Abertura e Estruturação):
-Gere o cabeçalho em texto puro exatamente no formato:
-[TÓPICO ABERTO: ${topic} | DATA: ${currentDate} | BANCA: ${board}]
-E adicione apenas:
-"Tópico registrado. Pode começar a explicação."
-Não adicione mais nada.`,
+        `O usuário está iniciando o tópico: "${topic}".
+Responda dando as boas-vindas de forma calorosa e encorajadora em exatamente 2 frases curtas, convidando-o a começar a explicar a matéria com as próprias palavras.
+Retorne no formato JSON CHAT.`,
       ];
     } else if (action === 'finish') {
       promptContents = [
         `O usuário declarou o encerramento da explicação sobre o tópico: "${topic}".
-Banca de rigor: "${board}".
-Histórico da explicação do usuário e intervenções anteriores:
+Histórico da conversa até o momento:
 ${JSON.stringify(history, null, 2)}
 
-Mensagem de encerramento do usuário: "${userMessage || 'Encerrei minha explicação.'}"
+Mensagem final do usuário: "${userMessage || 'Encerrei minha explicação.'}"
 
-Agora gere rigorosamente o relatório final de acordo com a Regra 3 (Avaliação e Encerramento do Tópico):
---- AVALIAÇÃO DE RETENÇÃO ---
-
-Diagnóstico de Precisão: [superficial, mediana ou aprofundada, com justificativa técnica implacável para a banca ${board}]
-
-Correções Realizadas:
-- [Liste os erros corrigidos ou indique 'Nenhum erro conceitual grave identificado durante a explanação.']
-
-Pontos Cegos:
-- [Aspectos amplamente cobrados em provas pela banca ${board} sobre ${topic} que foram omitidos pelo candidato]
-
-Resumo Consolidado:
-[Parágrafo denso e direto sintetizando a matéria com rigor técnico da banca ${board}]`,
+Gere agora a avaliação final rigorosa e completa no formato JSON puro EVALUATION com nota de 0 a 10, whatWentWrong, whatToImprove, strengths, summary e spokenFeedback.`,
       ];
     } else {
-      // Normal explanation turn
-      // Detect if user message signals finish
-      const normalizedMsg = userMessage.trim().toLowerCase();
-      const finishKeywords = ['encerrei', 'é isso', 'terminei', 'fim', 'concluí', 'conclui', 'finalizei', 'acabei'];
-      const isFinishing = finishKeywords.some((k) => normalizedMsg === k || normalizedMsg.startsWith(k + '.') || normalizedMsg.startsWith(k + '!'));
+      const normalizedMsg = (userMessage || '').trim().toLowerCase();
+      const finishKeywords = ['encerrei', 'é isso', 'terminei', 'fim', 'concluí', 'conclui', 'finalizei', 'acabei', 'terminei a explicação', 'pode avaliar'];
+      const isFinishing = finishKeywords.some(
+        (k) => normalizedMsg === k || normalizedMsg.startsWith(k + '.') || normalizedMsg.startsWith(k + '!')
+      );
 
       if (isFinishing) {
         promptContents = [
           `O usuário sinalizou encerramento com a mensagem: "${userMessage}".
-Tópico: "${topic}"
-Banca: "${board}"
+Tópico explicado: "${topic}".
 Histórico completo:
 ${JSON.stringify(history, null, 2)}
 
-Gere agora a AVALIAÇÃO DE RETENÇÃO completa conforme a Regra 3.`,
+Gere agora o relatório de avaliação final em JSON puro EVALUATION.`,
         ];
       } else {
         promptContents = [
-          `Tópico sendo explicado pelo usuário (no papel de professor): "${topic}".
-Banca avaliadora de rigor: "${board}".
+          `Tópico sendo explicado pelo usuário: "${topic}".
 Histórico recente da conversa:
 ${JSON.stringify(history.slice(-8), null, 2)}
 
 Nova fala do usuário (explicação da matéria):
 "${userMessage}"
 
-Sua tarefa de Avaliador de Conhecimento e Especialista em Aprendizagem Ativa:
-- Avalie a exatidão conceitual, o jargão técnico, a precisão jurídica/técnica e a adequação ao padrão da banca ${board}.
-- Se estiver CORRETO: responda APENAS com um incentivo curto para ele continuar (ex: "Correto. Prossiga.", "Conforme a doutrina dominante. Continue.", "Certo. Prossiga.").
-- Se houver ERRO CONCEITUAL GRAVE ou jargão equivocado: INTERROMPA-O IMEDIATAMENTE. Corrija em NO MÁXIMO DUAS FRASES e ordene que retome o raciocínio.
-- Mantenha a postura fria, acadêmica, seca e implacável. Jamais elogie.`,
+Sua tarefa:
+- Ouça atentamente.
+- Se houver erro conceitual ou jargão equivocado: corrija imediatamente em 2 frases ("interlocutionType": "correction").
+- Se estiver correto: valide brevemente e faça UMA pergunta estimulante para aprofundar ("interlocutionType": "question").
+- Resposta curta (2 a 4 frases) para áudio TTS.
+Retorne em JSON CHAT.`,
         ];
       }
     }
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: promptContents.join('\n\n'),
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        temperature: 0.2, // low temperature for rigorous, factual exam board behavior
-      },
-    });
+    const modelsToTry = ['gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-2.0-flash'];
+    let lastError: any = null;
+    let responseText = '';
 
-    const replyText = response.text?.trim() || '';
+    for (const modelName of modelsToTry) {
+      try {
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: promptContents.join('\n\n'),
+          config: {
+            systemInstruction: SYSTEM_PROMPT,
+            temperature: 0.3,
+            responseMimeType: 'application/json',
+          },
+        });
+        responseText = response.text?.trim() || '';
+        if (responseText) break;
+      } catch (err: any) {
+        lastError = err;
+      }
+    }
 
-    // Classify turn type
-    let turnType: 'OPENING' | 'CORRECT_PROCEED' | 'INTERRUPTION' | 'EVALUATION' = 'CORRECT_PROCEED';
-    if (replyText.includes('[TÓPICO ABERTO:')) {
-      turnType = 'OPENING';
-    } else if (replyText.includes('--- AVALIAÇÃO DE RETENÇÃO ---')) {
-      turnType = 'EVALUATION';
-    } else if (
-      replyText.toLowerCase().includes('interrupção') ||
-      replyText.toLowerCase().includes('incorreto') ||
-      replyText.toLowerCase().includes('retome o raciocínio') ||
-      replyText.toLowerCase().includes('atenção') ||
-      replyText.toLowerCase().includes('equívoco') ||
-      replyText.toLowerCase().includes('retome')
-    ) {
-      turnType = 'INTERRUPTION';
+    if (!responseText && lastError) {
+      throw lastError;
+    }
+
+    const parsedJson = extractJson(responseText);
+
+    if (parsedJson) {
+      return res.json(parsedJson);
     }
 
     return res.json({
-      text: replyText,
-      turnType,
-      topic,
-      board,
+      type: 'CHAT',
+      interlocutionType: 'question',
+      spokenFeedback: responseText || 'Muito interessante. Continue sua explicação!',
+      detectedCorrection: null,
     });
   } catch (error: any) {
-    console.error('Erro na avaliação Gemini:', error);
+    console.error('Erro na avaliação local:', error);
     return res.status(500).json({
-      error: error?.message || 'Falha ao processar avaliação com a banca.',
+      error: error?.message || 'Falha ao processar avaliação com a IA.',
     });
   }
 });
 
-// Configure Vite middleware in dev or static serving in prod
 async function startServer() {
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve(__dirname, 'dist')));
@@ -229,7 +221,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`BancaExaminadoraAI servidor rodando na porta ${PORT}`);
+    console.log(`Conversa AI servidor rodando na porta ${PORT}`);
   });
 }
 

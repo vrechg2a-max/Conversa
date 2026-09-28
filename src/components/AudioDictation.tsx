@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, AlertCircle } from 'lucide-react';
+import { Mic, MicOff, Radio } from 'lucide-react';
 
 interface AudioDictationProps {
   onTranscriptSegment: (text: string) => void;
   isListening: boolean;
   setIsListening: (listening: boolean) => void;
   disabled?: boolean;
+  buttonLabel?: string;
+  className?: string;
 }
 
 export const AudioDictation: React.FC<AudioDictationProps> = ({
@@ -13,9 +15,16 @@ export const AudioDictation: React.FC<AudioDictationProps> = ({
   isListening,
   setIsListening,
   disabled = false,
+  buttonLabel,
+  className = '',
 }) => {
   const [supported, setSupported] = useState(true);
   const recognitionRef = useRef<any>(null);
+  const isListeningRef = useRef(isListening);
+
+  useEffect(() => {
+    isListeningRef.current = isListening;
+  }, [isListening]);
 
   useEffect(() => {
     const SpeechRecognition =
@@ -45,15 +54,15 @@ export const AudioDictation: React.FC<AudioDictationProps> = ({
       };
 
       recognition.onerror = (event: any) => {
-        console.warn('Speech recognition error:', event.error);
+        console.warn('SpeechRecognition warning:', event.error);
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
           setIsListening(false);
         }
       };
 
       recognition.onend = () => {
-        // If still flagged as listening, restart (some browsers auto-stop after silence)
-        if (isListening) {
+        // If still flagged as listening by parent, keep active
+        if (isListeningRef.current) {
           try {
             recognition.start();
           } catch {
@@ -64,7 +73,7 @@ export const AudioDictation: React.FC<AudioDictationProps> = ({
 
       recognitionRef.current = recognition;
     } catch (e) {
-      console.error('Falha ao inicializar reconhecimento de fala:', e);
+      console.error('Falha ao inicializar Web Speech Recognition:', e);
       setSupported(false);
     }
 
@@ -77,27 +86,26 @@ export const AudioDictation: React.FC<AudioDictationProps> = ({
     };
   }, []);
 
-  const toggleListening = () => {
-    if (!supported || disabled) return;
+  // Sync external state changes
+  useEffect(() => {
+    if (!recognitionRef.current || !supported) return;
 
     if (isListening) {
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch {}
+      try {
+        recognitionRef.current.start();
+      } catch (e) {
+        // Already started or busy
       }
-      setIsListening(false);
     } else {
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.start();
-          setIsListening(true);
-        } catch (e) {
-          console.error('Error starting recognition:', e);
-          setIsListening(false);
-        }
-      }
+      try {
+        recognitionRef.current.stop();
+      } catch {}
     }
+  }, [isListening, supported]);
+
+  const toggleListening = () => {
+    if (!supported || disabled) return;
+    setIsListening(!isListening);
   };
 
   if (!supported) {
@@ -105,38 +113,44 @@ export const AudioDictation: React.FC<AudioDictationProps> = ({
       <button
         type="button"
         disabled
-        title="Reconhecimento de voz não suportado neste navegador. Digite sua explicação no campo de texto."
-        className="p-2.5 rounded-lg bg-stone-900 border border-stone-800 text-stone-600 cursor-not-allowed"
+        title="Reconhecimento de voz não suportado neste navegador. Digite no campo de texto."
+        className="p-3 rounded-xl bg-stone-900 border border-stone-800 text-stone-600 cursor-not-allowed"
       >
-        <MicOff className="w-4 h-4" />
+        <MicOff className="w-5 h-5" />
       </button>
     );
   }
 
   return (
-    <div className="relative">
+    <div className="relative inline-flex items-center">
       <button
         type="button"
         onClick={toggleListening}
         disabled={disabled}
-        title={isListening ? 'Parar microfone (ouvindo fala...)' : 'Falar explicação em voz alta (Ditado PT-BR)'}
-        className={`relative p-2.5 rounded-lg border transition-all cursor-pointer flex items-center justify-center ${
+        title={isListening ? 'Clique para pausar microfone' : 'Falar explicação por voz (Microfone PT-BR)'}
+        className={`relative p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-center gap-2 ${
           isListening
-            ? 'bg-rose-950/80 border-rose-600 text-rose-300 ring-2 ring-rose-500/50 animate-pulse'
-            : 'bg-stone-900 border-stone-800 hover:border-stone-700 text-stone-300 hover:text-stone-100'
-        } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+            ? 'bg-rose-950 border-rose-500 text-rose-300 ring-2 ring-rose-500/50 shadow-lg shadow-rose-950/50'
+            : 'bg-stone-900 border-stone-700/80 hover:border-emerald-500/60 text-stone-200 hover:text-emerald-400'
+        } ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${className}`}
       >
         {isListening ? (
-          <Mic className="w-4 h-4 text-rose-400" />
+          <>
+            <Radio className="w-5 h-5 text-rose-400 animate-pulse" />
+            {buttonLabel && <span className="text-xs font-semibold text-rose-200">{buttonLabel}</span>}
+          </>
         ) : (
-          <Mic className="w-4 h-4" />
+          <>
+            <Mic className="w-5 h-5" />
+            {buttonLabel && <span className="text-xs font-medium">{buttonLabel}</span>}
+          </>
         )}
       </button>
 
       {/* Floating active mic badge */}
       {isListening && (
-        <span className="absolute -top-7 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] font-mono px-2 py-0.5 rounded bg-rose-950 border border-rose-700 text-rose-300 shadow-md">
-          Ouvindo microfone...
+        <span className="absolute -top-7 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] font-mono px-2 py-0.5 rounded-full bg-rose-950 border border-rose-600 text-rose-300 shadow-md">
+          Microfone Ligado
         </span>
       )}
     </div>

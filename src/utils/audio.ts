@@ -1,61 +1,204 @@
 /**
- * Helper for browser Speech Recognition and Speech Synthesis
+ * Web Audio and Speech Synthesis (TTS) utilities for Conversa AI
  */
 
-// Play a subtle short academic alert tone when interrupted by the examiner
-export function playInterruptionBeep() {
-  try {
-    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
+// Helper to remove markdown symbols for clean speech synthesis
+export function cleanTextForSpeech(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/```[\s\S]*?```/g, '') // Remove code blocks
+    .replace(/`([^`]+)`/g, '$1')     // Remove inline code ticks
+    .replace(/\*\*([^*]+)\*\*/g, '$1') // Remove bold
+    .replace(/\*([^*]+)\*/g, '$1')   // Remove italics
+    .replace(/#+\s/g, '')            // Remove headers
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // Convert markdown links
+    .replace(/[>•\-]/g, ' ')         // Remove bullets and quotes
+    .replace(/\s+/g, ' ')            // Normalize spaces
+    .trim();
+}
 
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(440, ctx.currentTime); // A4
-    osc.frequency.exponentialRampToValueAtTime(220, ctx.currentTime + 0.18);
+// Gentle audio cues using Web Audio API
+class SoundEffects {
+  private ctx: AudioContext | null = null;
 
-    gain.gain.setValueAtTime(0.12, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.18);
+  private getContext(): AudioContext | null {
+    if (typeof window === 'undefined') return null;
+    if (!this.ctx) {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        this.ctx = new AudioCtx();
+      }
+    }
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+    return this.ctx;
+  }
 
-    osc.connect(gain);
-    gain.connect(ctx.destination);
+  // Friendly soft chime when session opens or mic activates
+  playStartChime() {
+    try {
+      const ctx = this.getContext();
+      if (!ctx) return;
+      const now = ctx.currentTime;
 
-    osc.start();
-    osc.stop(ctx.currentTime + 0.18);
-  } catch {
-    // AudioContext might be blocked until user gesture, ignore safely
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(523.25, now); // C5
+      osc.frequency.exponentialRampToValueAtTime(659.25, now + 0.15); // E5
+
+      gain.gain.setValueAtTime(0.08, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.35);
+    } catch {}
+  }
+
+  // Subtle alert tone when AI makes a correction
+  playCorrectionPing() {
+    try {
+      const ctx = this.getContext();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(440, now); // A4
+      osc.frequency.exponentialRampToValueAtTime(349.23, now + 0.2); // F4
+
+      gain.gain.setValueAtTime(0.1, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.3);
+    } catch {}
+  }
+
+  // Celebratory sound when evaluation report and grade are issued
+  playGradeFanfare() {
+    try {
+      const ctx = this.getContext();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+
+      const notes = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6
+      notes.forEach((freq, idx) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const start = now + idx * 0.1;
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, start);
+
+        gain.gain.setValueAtTime(0.09, start);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.35);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(start);
+        osc.stop(start + 0.35);
+      });
+    } catch {}
   }
 }
 
-// Speak examiner response aloud in PT-BR if enabled
-export function speakExaminer(text: string, onEnd?: () => void) {
-  if (!('speechSynthesis' in window)) return;
-  try {
-    window.speechSynthesis.cancel(); // Stop any pending speech
-    const utterance = new SpeechSynthesisUtterance(text);
+export const sounds = new SoundEffects();
+
+// Speech Synthesis Manager for Natural Voice Output
+class VoiceAssistant {
+  private isSpeakingNow: boolean = false;
+  private currentUtterance: SpeechSynthesisUtterance | null = null;
+
+  public getVoices(): SpeechSynthesisVoice[] {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return [];
+    return window.speechSynthesis.getVoices();
+  }
+
+  public getPreferredVoice(): SpeechSynthesisVoice | null {
+    const voices = this.getVoices();
+    // Prioritize natural PT-BR voices
+    return (
+      voices.find(v => v.lang === 'pt-BR' && (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('Luciana') || v.name.includes('Daniel') || v.name.includes('Francisca'))) ||
+      voices.find(v => v.lang.replace('_', '-').toLowerCase() === 'pt-br') ||
+      voices.find(v => v.lang.startsWith('pt')) ||
+      null
+    );
+  }
+
+  public speak(
+    text: string,
+    options?: {
+      rate?: number;
+      pitch?: number;
+      onStart?: () => void;
+      onEnd?: () => void;
+      onError?: () => void;
+    }
+  ) {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+    this.stop(); // Stop any active speech
+
+    const clean = cleanTextForSpeech(text);
+    if (!clean) return;
+
+    const utterance = new SpeechSynthesisUtterance(clean);
     utterance.lang = 'pt-BR';
-    utterance.rate = 1.05;
-    utterance.pitch = 0.95; // slightly lower, serious examiner tone
+    utterance.rate = options?.rate ?? 1.05;
+    utterance.pitch = options?.pitch ?? 1.0;
 
-    if (onEnd) {
-      utterance.onend = onEnd;
-      utterance.onerror = onEnd;
+    const voice = this.getPreferredVoice();
+    if (voice) {
+      utterance.voice = voice;
     }
 
-    // Try to find a pt-BR voice
-    const voices = window.speechSynthesis.getVoices();
-    const ptVoice = voices.find(v => v.lang.startsWith('pt') || v.lang.includes('BR'));
-    if (ptVoice) {
-      utterance.voice = ptVoice;
-    }
+    utterance.onstart = () => {
+      this.isSpeakingNow = true;
+      options?.onStart?.();
+    };
 
+    utterance.onend = () => {
+      this.isSpeakingNow = false;
+      this.currentUtterance = null;
+      options?.onEnd?.();
+    };
+
+    utterance.onerror = (e) => {
+      this.isSpeakingNow = false;
+      this.currentUtterance = null;
+      if (e.error !== 'canceled') {
+        console.warn('SpeechSynthesis error:', e);
+      }
+      options?.onError?.();
+    };
+
+    this.currentUtterance = utterance;
     window.speechSynthesis.speak(utterance);
-  } catch (err) {
-    console.error('Speech synthesis error:', err);
+  }
+
+  public stop() {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    this.isSpeakingNow = false;
+    this.currentUtterance = null;
+  }
+
+  public isSpeaking(): boolean {
+    return this.isSpeakingNow;
   }
 }
 
-export function stopSpeaking() {
-  if ('speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
-  }
-}
+export const voice = new VoiceAssistant();

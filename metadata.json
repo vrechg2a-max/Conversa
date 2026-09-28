@@ -1,7 +1,6 @@
 {
-  "name": "BancaExaminadoraAI",
-  "description": "Avaliador de Conhecimento e Especialista em Aprendizagem Ativa com rigor de bancas examinadoras.",
+  "name": "Conversa AI",
+  "description": "Explique a matéria para a IA por voz em tempo real. A IA faz perguntas, corrige equívocos e emite nota com observações do que melhorar.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
-

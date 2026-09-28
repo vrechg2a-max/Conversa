@@ -1,118 +1,137 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { 
-  Scale, 
+  Radio, 
   Volume2, 
   VolumeX, 
-  Bell, 
-  BellOff, 
-  History, 
+  FolderOpen, 
   PlusCircle, 
-  ShieldAlert,
-  GraduationCap
+  Sparkles,
+  PhoneCall,
+  MessageSquare,
+  Settings2
 } from 'lucide-react';
-import { ExamBoard } from '../types';
 
 interface HeaderProps {
-  currentBoard: ExamBoard;
   activeTopic: string | null;
   ttsEnabled: boolean;
   onToggleTts: () => void;
-  soundAlertsEnabled: boolean;
-  onToggleSoundAlerts: () => void;
+  voiceRate: number;
+  onChangeVoiceRate: (rate: number) => void;
   onOpenNewTopic: () => void;
   onOpenHistory: () => void;
   savedSessionsCount: number;
+  viewMode: 'call' | 'chat';
+  onToggleViewMode: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  currentBoard,
   activeTopic,
   ttsEnabled,
   onToggleTts,
-  soundAlertsEnabled,
-  onToggleSoundAlerts,
+  voiceRate,
+  onChangeVoiceRate,
   onOpenNewTopic,
   onOpenHistory,
   savedSessionsCount,
+  viewMode,
+  onToggleViewMode,
 }) => {
+  const [showSettings, setShowSettings] = useState(false);
+
   return (
     <header className="border-b border-stone-800 bg-stone-950/90 backdrop-blur sticky top-0 z-30 px-4 py-3 sm:px-6">
-      <div className="max-w-6xl mx-auto flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-        {/* Left: Brand & Mode */}
+      <div className="max-w-6xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        {/* Left: Brand */}
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-amber-950/60 border border-amber-600/40 flex items-center justify-center text-amber-400 shadow-inner">
-            <Scale className="w-5 h-5" />
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center text-stone-950 shadow-lg shadow-emerald-950/40">
+            <Radio className="w-5 h-5" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-base sm:text-lg font-semibold tracking-tight text-stone-100 flex items-center gap-2 font-serif">
-                BancaExaminadora<span className="text-amber-500 font-mono text-xs uppercase px-1.5 py-0.5 rounded bg-amber-950/80 border border-amber-600/30">AI</span>
+              <h1 className="text-base sm:text-lg font-bold tracking-tight text-white flex items-center gap-1.5 font-sans">
+                Conversa<span className="text-emerald-400 font-mono text-xs uppercase px-1.5 py-0.5 rounded bg-emerald-950/80 border border-emerald-600/30">AI</span>
               </h1>
-              <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-medium text-stone-400 bg-stone-900 border border-stone-800 px-2 py-0.5 rounded-full">
-                <GraduationCap className="w-3 h-3 text-amber-400" />
-                Aprendizagem Ativa & Rigor Técnico
+              <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 px-2 py-0.5 rounded-full">
+                <Sparkles className="w-3 h-3" />
+                Tutor de Voz em Tempo Real
               </span>
             </div>
             <p className="text-xs text-stone-400">
-              Você explica como <span className="text-stone-200 font-medium">Professor</span>. A IA avalia com o rigor implacável da banca.
+              Explique a matéria, receba perguntas e correções por voz, e veja sua nota final.
             </p>
           </div>
         </div>
 
-        {/* Right: Board Indicator & Controls */}
+        {/* Right: Controls & Navigation */}
         <div className="flex items-center flex-wrap gap-2 text-xs">
-          {/* Active Board Tag */}
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-stone-900 border border-stone-800 text-stone-300">
-            <span className="text-stone-500 text-[10px] uppercase font-mono">Banca:</span>
-            <span className="font-semibold text-amber-400">{currentBoard}</span>
+          {/* Switch View Mode: Voice Call vs Chat Feed */}
+          {activeTopic && (
+            <button
+              onClick={onToggleViewMode}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-900 border border-stone-800 hover:border-stone-700 text-stone-300 hover:text-white transition-all cursor-pointer shadow-sm"
+              title={viewMode === 'call' ? 'Mudar para visualização em Chat e Transcrição' : 'Mudar para Modo Chamada de Voz'}
+            >
+              {viewMode === 'call' ? (
+                <>
+                  <MessageSquare className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="font-medium">Modo Chat</span>
+                </>
+              ) : (
+                <>
+                  <PhoneCall className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
+                  <span className="font-medium">Modo Chamada</span>
+                </>
+              )}
+            </button>
+          )}
+
+          {/* Voice Output (TTS) Toggle */}
+          <div className="relative">
+            <button
+              onClick={onToggleTts}
+              title={ttsEnabled ? 'Voz da IA ativada (clique para silenciar)' : 'Ativar voz falada da IA'}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border transition-all cursor-pointer ${
+                ttsEnabled
+                  ? 'bg-emerald-950/60 border-emerald-600/50 text-emerald-300'
+                  : 'bg-stone-900 border-stone-800 text-stone-400 hover:text-stone-200'
+              }`}
+            >
+              {ttsEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+              <span className="hidden md:inline">{ttsEnabled ? 'Voz Ativa' : 'Voz Mudo'}</span>
+            </button>
           </div>
 
-          {/* Toggle Voice Reading (TTS) */}
+          {/* Voice Rate selector button */}
           <button
-            onClick={onToggleTts}
-            title={ttsEnabled ? 'Voz da banca ativada (clique para silenciar)' : 'Ativar leitura em voz alta da banca'}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded border transition-colors cursor-pointer ${
-              ttsEnabled 
-                ? 'bg-amber-950/50 border-amber-700/60 text-amber-300' 
-                : 'bg-stone-900 border-stone-800 text-stone-400 hover:text-stone-200'
-            }`}
+            onClick={() => {
+              const rates = [1.0, 1.1, 1.25, 0.9];
+              const nextIdx = (rates.indexOf(voiceRate) + 1) % rates.length;
+              onChangeVoiceRate(rates[nextIdx]);
+            }}
+            title="Ajustar velocidade da fala da IA"
+            className="px-2.5 py-1.5 rounded-xl bg-stone-900 border border-stone-800 text-stone-300 hover:text-white font-mono text-[11px] cursor-pointer"
           >
-            {ttsEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
-            <span className="hidden sm:inline">Voz da Banca</span>
+            {voiceRate}x
           </button>
 
-          {/* Toggle Interruption Sound Alert */}
-          <button
-            onClick={onToggleSoundAlerts}
-            title={soundAlertsEnabled ? 'Alerta sonoro de interrupção ativado' : 'Alerta sonoro desativado'}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded border transition-colors cursor-pointer ${
-              soundAlertsEnabled 
-                ? 'bg-stone-900 border-amber-800/60 text-amber-400' 
-                : 'bg-stone-900 border-stone-800 text-stone-400 hover:text-stone-200'
-            }`}
-          >
-            {soundAlertsEnabled ? <Bell className="w-3.5 h-3.5" /> : <BellOff className="w-3.5 h-3.5" />}
-            <span className="hidden sm:inline">Bip Alerta</span>
-          </button>
-
-          {/* History Button */}
+          {/* Caderno de Tópicos (Saved Topics History) */}
           <button
             onClick={onOpenHistory}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-stone-900 border border-stone-800 text-stone-300 hover:bg-stone-800 transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-900 border border-stone-800 hover:border-stone-700 text-stone-200 hover:text-white transition-all cursor-pointer"
           >
-            <History className="w-3.5 h-3.5 text-stone-400" />
-            <span>Histórico</span>
+            <FolderOpen className="w-3.5 h-3.5 text-stone-400" />
+            <span>Caderno de Tópicos</span>
             {savedSessionsCount > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full bg-stone-800 text-[10px] text-amber-400 font-mono">
+              <span className="px-1.5 py-0.2 rounded-full bg-emerald-950 border border-emerald-700/60 text-[10px] text-emerald-300 font-mono font-bold">
                 {savedSessionsCount}
               </span>
             )}
           </button>
 
-          {/* New Topic Button */}
+          {/* New Topic Action */}
           <button
             onClick={onOpenNewTopic}
-            className="flex items-center gap-1.5 px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium transition-colors shadow-sm cursor-pointer"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-stone-950 font-bold transition-all shadow-md shadow-emerald-950/40 cursor-pointer"
           >
             <PlusCircle className="w-3.5 h-3.5" />
             <span>Novo Tópico</span>
