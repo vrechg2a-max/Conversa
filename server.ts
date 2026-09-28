@@ -11,17 +11,7 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json());
 
-const apiKey = process.env.GEMINI_API_KEY;
-const ai = apiKey
-  ? new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'conversa-ai',
-        },
-      },
-    })
-  : null;
+const defaultApiKey = process.env.GEMINI_API_KEY;
 
 const SYSTEM_PROMPT = `
 Você é o Tutor de Voz e Parceiro de Estudos Interativo do aplicativo "Conversa AI".
@@ -69,56 +59,77 @@ Para turno de finalização/avaliação:
 }
 `;
 
-const MODELS_TO_TRY = ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.8-flash'];
+const MODELS_TO_TRY = [
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-8b',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-latest',
+  'gemini-3.8-flash',
+];
 
 async function generateWithFallback(
-  genAi: GoogleGenAI,
+  ai: GoogleGenAI,
   prompt: string,
   systemPrompt: string
 ): Promise<{ text: string; modelUsed: string }> {
   let lastError: any = null;
 
   for (const model of MODELS_TO_TRY) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const config: any = {
-          systemInstruction: systemPrompt,
-          temperature: 0.3,
-          responseMimeType: 'application/json',
+    try {
+      const config: any = {
+        systemInstruction: systemPrompt,
+        temperature: 0.3,
+        responseMimeType: 'application/json',
+      };
+
+      if (model.startsWith('gemini-3')) {
+        config.thinkingConfig = {
+          thinkingLevel: 'MINIMAL',
         };
+      }
 
-        if (model.startsWith('gemini-3')) {
-          config.thinkingConfig = {
-            thinkingLevel: 'MINIMAL',
-          };
-        }
+      const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+        config,
+      });
 
-        const response = await genAi.models.generateContent({
-          model,
-          contents: prompt,
-          config,
-        });
+      const text = response.text?.trim() || '';
+      if (text) {
+        return { text, modelUsed: model };
+      }
+    } catch (err: any) {
+      lastError = err;
+      const msg = err?.message || String(err);
+      const is404 = msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('no longer available');
+      const isQuota =
+        msg.includes('429') ||
+        msg.includes('RESOURCE_EXHAUSTED') ||
+        msg.includes('quota') ||
+        msg.includes('Quota exceeded');
+      const is503 = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand');
 
-        const text = response.text?.trim() || '';
-        if (text) {
-          return { text, modelUsed: model };
-        }
-      } catch (err: any) {
-        lastError = err;
-        const msg = err?.message || String(err);
-        const is404 = msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('no longer available');
-        const is503 = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand');
+      console.warn(`[Conversa AI local] Modelo ${model} falhou (${isQuota ? '429 Quota' : is503 ? '503 Carga' : is404 ? '404' : 'Erro'}): ${msg.slice(0, 100)}`);
 
-        console.warn(`[Conversa AI local] Modelo ${model} tentativa ${attempt} falhou: ${msg.slice(0, 120)}`);
+      if (isQuota || is404) {
+        continue;
+      }
 
-        if (is404) {
-          break;
-        }
-
-        if (is503 && attempt === 1) {
-          await new Promise((resolve) => setTimeout(resolve, 600));
-          continue;
-        }
+      if (is503) {
+        await new Promise((r) => setTimeout(r, 500));
+        try {
+          const resRetry = await ai.models.generateContent({
+            model,
+            contents: prompt,
+            config: {
+              systemInstruction: systemPrompt,
+              temperature: 0.3,
+              responseMimeType: 'application/json',
+            },
+          });
+          const textRetry = resRetry.text?.trim() || '';
+          if (textRetry) return { text: textRetry, modelUsed: model };
+        } catch {}
       }
     }
   }
@@ -151,11 +162,21 @@ function extractJson(text: string): any {
 
 app.post('/api/evaluate', async (req, res) => {
   try {
-    if (!ai) {
+    const key = req.body?.customApiKey || process.env.GEMINI_API_KEY || defaultApiKey;
+    if (!key) {
       return res.status(500).json({
         error: 'Chave GEMINI_API_KEY não configurada no servidor. Configure a variável no ambiente.',
       });
     }
+
+    const ai = new GoogleGenAI({
+      apiKey: key,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'conversa-ai',
+        },
+      },
+    });
 
     const {
       topic = 'Matéria de Estudo',
@@ -217,26 +238,46 @@ Retorne em JSON CHAT.`,
       }
     }
 
-    const { text: responseText, modelUsed } = await generateWithFallback(
-      ai,
-      promptContents.join('\n\n'),
-      SYSTEM_PROMPT
-    );
+    try {
+      const { text: responseText, modelUsed } = await generateWithFallback(
+        ai,
+        promptContents.join('\n\n'),
+        SYSTEM_PROMPT
+      );
 
-    const parsedJson = extractJson(responseText);
+      const parsedJson = extractJson(responseText);
 
-    if (parsedJson) {
-      parsedJson._model = modelUsed;
-      return res.json(parsedJson);
+      if (parsedJson) {
+        parsedJson._model = modelUsed;
+        return res.json(parsedJson);
+      }
+
+      return res.json({
+        type: 'CHAT',
+        interlocutionType: 'question',
+        spokenFeedback: responseText || 'Muito interessante. Continue sua explicação!',
+        detectedCorrection: null,
+        _model: modelUsed,
+      });
+    } catch (modelErr: any) {
+      const errMsg = modelErr?.message || String(modelErr);
+      const isQuota =
+        errMsg.includes('429') ||
+        errMsg.includes('RESOURCE_EXHAUSTED') ||
+        errMsg.includes('quota') ||
+        errMsg.includes('Quota exceeded');
+
+      if (isQuota) {
+        return res.json({
+          type: 'CHAT',
+          interlocutionType: 'encouragement',
+          spokenFeedback: 'A cota gratuita dos modelos de IA atingiu o limite temporário da Google. Aguarde alguns segundos ou adicione sua chave própria nas configurações.',
+          error: 'Cota gratuita temporariamente atingida (429). Aguarde alguns segundos ou adicione sua chave nas configurações.',
+          isQuotaExceeded: true,
+        });
+      }
+      throw modelErr;
     }
-
-    return res.json({
-      type: 'CHAT',
-      interlocutionType: 'question',
-      spokenFeedback: responseText || 'Muito interessante. Continue sua explicação!',
-      detectedCorrection: null,
-      _model: modelUsed,
-    });
   } catch (error: any) {
     console.error('Erro na avaliação local:', error);
     return res.status(500).json({

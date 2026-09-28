@@ -35,7 +35,7 @@ class SoundEffects {
     return this.ctx;
   }
 
-  // Friendly soft chime when session opens or mic activates
+  // Friendly soft chime when session opens
   playStartChime() {
     try {
       const ctx = this.getContext();
@@ -57,6 +57,56 @@ class SoundEffects {
 
       osc.start(now);
       osc.stop(now + 0.35);
+    } catch {}
+  }
+
+  // Subtle "Your Turn" chime when AI finishes speaking so user knows to talk
+  playYourTurnChime() {
+    try {
+      const ctx = this.getContext();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(659.25, now); // E5
+      osc.frequency.exponentialRampToValueAtTime(880.00, now + 0.12); // A5
+
+      gain.gain.setValueAtTime(0.06, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.28);
+    } catch {}
+  }
+
+  // Audio cue when speech is automatically sent to the AI
+  playMessageSentTone() {
+    try {
+      const ctx = this.getContext();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(440, now); // A4
+      osc.frequency.exponentialRampToValueAtTime(587.33, now + 0.1); // D5
+
+      gain.gain.setValueAtTime(0.05, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.2);
     } catch {}
   }
 
@@ -128,7 +178,6 @@ class VoiceAssistant {
 
   public getPreferredVoice(): SpeechSynthesisVoice | null {
     const voices = this.getVoices();
-    // Prioritize natural PT-BR voices
     return (
       voices.find(v => v.lang === 'pt-BR' && (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('Luciana') || v.name.includes('Daniel') || v.name.includes('Francisca'))) ||
       voices.find(v => v.lang.replace('_', '-').toLowerCase() === 'pt-br') ||
@@ -147,12 +196,18 @@ class VoiceAssistant {
       onError?: () => void;
     }
   ) {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      options?.onEnd?.();
+      return;
+    }
 
     this.stop(); // Stop any active speech
 
     const clean = cleanTextForSpeech(text);
-    if (!clean) return;
+    if (!clean) {
+      options?.onEnd?.();
+      return;
+    }
 
     const utterance = new SpeechSynthesisUtterance(clean);
     utterance.lang = 'pt-BR';
@@ -181,7 +236,7 @@ class VoiceAssistant {
       if (e.error !== 'canceled') {
         console.warn('SpeechSynthesis error:', e);
       }
-      options?.onError?.();
+      options?.onEnd?.();
     };
 
     this.currentUtterance = utterance;

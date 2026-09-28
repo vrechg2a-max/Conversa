@@ -1,6 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 
-const apiKey = process.env.GEMINI_API_KEY;
+const defaultApiKey = process.env.GEMINI_API_KEY;
 
 const SYSTEM_PROMPT = `
 Você é o Tutor de Voz e Parceiro de Estudos Interativo do aplicativo "Conversa AI".
@@ -48,8 +48,17 @@ Para turno de finalização/avaliação:
 }
 `;
 
-// Priority: gemini-3.1-flash-lite (high capacity, ultra-fast latency, dedicated quota) -> gemini-flash-latest -> gemini-3.8-flash
-const MODELS_TO_TRY = ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.8-flash'];
+// Priority order:
+// gemini-1.5-flash: Has generous 15 RPM / 1,500 RPD on free tier (does not hit 20 RPD limit!)
+// gemini-1.5-flash-8b: Fast backup with 1,500 RPD
+// gemini-3.1-flash-lite / gemini-flash-latest / gemini-3.8-flash: Latest models
+const MODELS_TO_TRY = [
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-8b',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-latest',
+  'gemini-3.8-flash',
+];
 
 async function generateWithFallback(
   ai: GoogleGenAI,
@@ -59,48 +68,63 @@ async function generateWithFallback(
   let lastError: any = null;
 
   for (const model of MODELS_TO_TRY) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const config: any = {
-          systemInstruction: systemPrompt,
-          temperature: 0.3,
-          responseMimeType: 'application/json',
+    try {
+      const config: any = {
+        systemInstruction: systemPrompt,
+        temperature: 0.3,
+        responseMimeType: 'application/json',
+      };
+
+      if (model.startsWith('gemini-3')) {
+        config.thinkingConfig = {
+          thinkingLevel: 'MINIMAL',
         };
+      }
 
-        if (model.startsWith('gemini-3')) {
-          config.thinkingConfig = {
-            thinkingLevel: 'MINIMAL',
-          };
-        }
+      const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+        config,
+      });
 
-        const response = await ai.models.generateContent({
-          model,
-          contents: prompt,
-          config,
-        });
+      const text = response.text?.trim() || '';
+      if (text) {
+        return { text, modelUsed: model };
+      }
+    } catch (err: any) {
+      lastError = err;
+      const msg = err?.message || String(err);
+      const is404 = msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('no longer available');
+      const isQuota =
+        msg.includes('429') ||
+        msg.includes('RESOURCE_EXHAUSTED') ||
+        msg.includes('quota') ||
+        msg.includes('Quota exceeded');
+      const is503 = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand');
 
-        const text = response.text?.trim() || '';
-        if (text) {
-          return { text, modelUsed: model };
-        }
-      } catch (err: any) {
-        lastError = err;
-        const msg = err?.message || String(err);
-        const is404 = msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('no longer available');
-        const is503 = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand');
+      console.warn(`[Conversa AI] Modelo ${model} falhou (${isQuota ? '429 Quota' : is503 ? '503 Carga' : is404 ? '404' : 'Erro'}): ${msg.slice(0, 100)}`);
 
-        console.warn(`[Conversa AI] Modelo ${model} tentativa ${attempt} falhou: ${msg.slice(0, 120)}`);
+      // If quota is exhausted or model 404, immediately skip to the next model in the list
+      if (isQuota || is404) {
+        continue;
+      }
 
-        if (is404) {
-          // Model deprecated or not found on this account, skip immediately
-          break;
-        }
-
-        if (is503 && attempt === 1) {
-          // Brief backoff before retry to overcome momentary load spikes
-          await new Promise((resolve) => setTimeout(resolve, 600));
-          continue;
-        }
+      if (is503) {
+        // Try once more after small pause
+        await new Promise((r) => setTimeout(r, 500));
+        try {
+          const resRetry = await ai.models.generateContent({
+            model,
+            contents: prompt,
+            config: {
+              systemInstruction: systemPrompt,
+              temperature: 0.3,
+              responseMimeType: 'application/json',
+            },
+          });
+          const textRetry = resRetry.text?.trim() || '';
+          if (textRetry) return { text: textRetry, modelUsed: model };
+        } catch {}
       }
     }
   }
@@ -132,10 +156,9 @@ function extractJson(text: string): any {
 }
 
 export default async function handler(req: any, res: any) {
-  // CORS configuration
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-gemini-key');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
@@ -146,10 +169,16 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    const key = process.env.GEMINI_API_KEY || apiKey;
+    const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
+    const key =
+      body.customApiKey ||
+      req.headers['x-gemini-key'] ||
+      process.env.GEMINI_API_KEY ||
+      defaultApiKey;
+
     if (!key) {
       return res.status(500).json({
-        error: 'Chave GEMINI_API_KEY não configurada no servidor Vercel. Configure nas variáveis de ambiente.',
+        error: 'Chave GEMINI_API_KEY não configurada. Adicione sua chave nas Configurações do app.',
       });
     }
 
@@ -162,10 +191,9 @@ export default async function handler(req: any, res: any) {
       },
     });
 
-    const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
     const {
       topic = 'Matéria de Estudo',
-      action = 'message', // 'open' | 'message' | 'finish'
+      action = 'message',
       history = [],
       userMessage = '',
     } = body;
@@ -229,26 +257,46 @@ Retorne estritamente em JSON CHAT.`,
       }
     }
 
-    const { text: responseText, modelUsed } = await generateWithFallback(
-      ai,
-      promptContents.join('\n\n'),
-      SYSTEM_PROMPT
-    );
+    try {
+      const { text: responseText, modelUsed } = await generateWithFallback(
+        ai,
+        promptContents.join('\n\n'),
+        SYSTEM_PROMPT
+      );
 
-    const parsedJson = extractJson(responseText);
+      const parsedJson = extractJson(responseText);
 
-    if (parsedJson) {
-      parsedJson._model = modelUsed;
-      return res.status(200).json(parsedJson);
+      if (parsedJson) {
+        parsedJson._model = modelUsed;
+        return res.status(200).json(parsedJson);
+      }
+
+      return res.status(200).json({
+        type: 'CHAT',
+        interlocutionType: 'question',
+        spokenFeedback: responseText || 'Muito interessante. Continue sua explicação!',
+        detectedCorrection: null,
+        _model: modelUsed,
+      });
+    } catch (modelErr: any) {
+      const errMsg = modelErr?.message || String(modelErr);
+      const isQuota =
+        errMsg.includes('429') ||
+        errMsg.includes('RESOURCE_EXHAUSTED') ||
+        errMsg.includes('quota') ||
+        errMsg.includes('Quota exceeded');
+
+      if (isQuota) {
+        return res.status(200).json({
+          type: 'CHAT',
+          interlocutionType: 'encouragement',
+          spokenFeedback: 'A cota gratuita dos modelos de IA atingiu o limite temporário da Google. Aguarde alguns segundos ou adicione sua chave própria nas configurações.',
+          error: 'Cota gratuita temporariamente atingida (429). Aguarde alguns segundos ou adicione sua chave gratuita do Google AI Studio nas configurações.',
+          isQuotaExceeded: true,
+        });
+      }
+      throw modelErr;
     }
-
-    return res.status(200).json({
-      type: 'CHAT',
-      interlocutionType: 'question',
-      spokenFeedback: responseText || 'Muito interessante. Continue sua explicação!',
-      detectedCorrection: null,
-      _model: modelUsed,
-    });
   } catch (error: any) {
     console.error('Erro no handler Vercel evaluate:', error);
     return res.status(500).json({

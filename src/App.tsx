@@ -10,6 +10,7 @@ import { InputBar } from './components/InputBar';
 import { VoiceCallView } from './components/VoiceCallView';
 import { NewTopicModal } from './components/NewTopicModal';
 import { TopicHistoryModal } from './components/TopicHistoryModal';
+import { SettingsModal } from './components/SettingsModal';
 import { ChatMessage, SavedTopicSession, TopicEvaluation } from './types';
 import { voice, sounds } from './utils/audio';
 import { useVoiceConversation } from './utils/useVoiceConversation';
@@ -17,6 +18,7 @@ import { useVoiceConversation } from './utils/useVoiceConversation';
 const STORAGE_KEY_SESSIONS = 'conversa_ai_topics_v2';
 const STORAGE_KEY_TTS = 'conversa_ai_tts_enabled';
 const STORAGE_KEY_VOICE_RATE = 'conversa_ai_voice_rate';
+const STORAGE_KEY_API_KEY = 'conversa_gemini_api_key';
 
 export default function App() {
   const [activeTopic, setActiveTopic] = useState<string | null>(null);
@@ -32,6 +34,12 @@ export default function App() {
   // Modals
   const [isNewTopicModalOpen, setIsNewTopicModalOpen] = useState(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+
+  // Custom API key
+  const [customApiKey, setCustomApiKey] = useState<string>(() => {
+    return localStorage.getItem(STORAGE_KEY_API_KEY) || '';
+  });
 
   // Settings
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(() => {
@@ -64,6 +72,10 @@ export default function App() {
   }, [voiceRate]);
 
   useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_API_KEY, customApiKey);
+  }, [customApiKey]);
+
+  useEffect(() => {
     localStorage.setItem(STORAGE_KEY_SESSIONS, JSON.stringify(savedSessions));
   }, [savedSessions]);
 
@@ -81,6 +93,7 @@ export default function App() {
   const speakText = useCallback(
     (text: string, onDone?: () => void) => {
       if (!ttsEnabled) {
+        setIsSpeaking(false);
         onDone?.();
         return;
       }
@@ -137,16 +150,36 @@ export default function App() {
 
         const res = await fetch('/api/evaluate', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(customApiKey ? { 'x-gemini-key': customApiKey } : {}),
+          },
           body: JSON.stringify({
             topic: activeTopic,
             action: 'message',
             userMessage: text.trim(),
+            customApiKey: customApiKey || undefined,
             history: historyForApi,
           }),
         });
 
         const data = await res.json();
+
+        if (data.isQuotaExceeded) {
+          const warnMsg: ChatMessage = {
+            id: 'msg-quota-' + Date.now(),
+            role: 'assistant',
+            text: 'A cota gratuita dos modelos de IA atingiu o limite temporário da Google. Aguarde alguns instantes ou adicione sua chave própria nas configurações.',
+            timestamp: getFormattedDate(),
+            interlocutionType: 'correction',
+          };
+          setMessages((prev) => [...prev, warnMsg]);
+          speakText(data.spokenFeedback, () => {
+            voiceHook.resumeTurnAfterAi();
+          });
+          return;
+        }
+
         if (!res.ok) {
           throw new Error(data.error || 'Erro na resposta do tutor');
         }
@@ -170,7 +203,7 @@ export default function App() {
           setEvaluation(data.evaluation);
           sounds.playGradeFanfare();
           speakText(data.spokenFeedback || 'Parabéns por concluir sua explicação!');
-          voiceHook.setIsListening(false);
+          voiceHook.stopListening();
         } else {
           const aiReply = data.spokenFeedback || data.text || 'Entendido. Continue sua explicação!';
           const interlocutionType = data.interlocutionType || 'question';
@@ -190,11 +223,9 @@ export default function App() {
             sounds.playCorrectionPing();
           }
 
-          // Read aloud and immediately re-open mic for fluid conversation when AI finishes!
+          // Read aloud and immediately resume listening for the next conversational turn!
           speakText(aiReply, () => {
-            if (activeTopic) {
-              voiceHook.setIsListening(true);
-            }
+            voiceHook.resumeTurnAfterAi();
           });
         }
       } catch (err: any) {
@@ -208,21 +239,21 @@ export default function App() {
         };
         setMessages((prev) => [...prev, errMsg]);
         // Resume mic so user can keep going
-        voiceHook.setIsListening(true);
+        voiceHook.resumeTurnAfterAi();
       } finally {
         setIsLoading(false);
       }
     },
-    [activeTopic, isLoading, messages, speakText, handleStopSpeaking]
+    [activeTopic, isLoading, messages, speakText, handleStopSpeaking, customApiKey]
   );
 
-  // Hook for voice conversation with automatic silence detection (VAD)
+  // Hook for voice conversation with automatic silence detection (VAD) and auto turn-taking
   const voiceHook = useVoiceConversation({
     onSendMessage: handleSendMessage,
     isLoading,
     isSpeaking,
     activeTopic,
-    autoSendDelayMs: 1400,
+    autoSendDelayMs: 1350,
   });
 
   // Open Topic action
@@ -244,10 +275,14 @@ export default function App() {
     try {
       const res = await fetch('/api/evaluate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(customApiKey ? { 'x-gemini-key': customApiKey } : {}),
+        },
         body: JSON.stringify({
           topic,
           action: 'open',
+          customApiKey: customApiKey || undefined,
         }),
       });
 
@@ -268,7 +303,7 @@ export default function App() {
 
       // Speak welcome and then activate microphone for conversation
       speakText(welcomeText, () => {
-        voiceHook.setIsListening(true);
+        voiceHook.resumeTurnAfterAi();
       });
     } catch (err: any) {
       console.warn('Fallback abertura local:', err);
@@ -282,11 +317,10 @@ export default function App() {
       };
       setMessages([fallbackMsg]);
       speakText(fallbackText, () => {
-        voiceHook.setIsListening(true);
+        voiceHook.resumeTurnAfterAi();
       });
     } finally {
       setIsLoading(false);
-      voiceHook.setIsListening(true);
     }
   };
 
@@ -295,7 +329,7 @@ export default function App() {
     if (!activeTopic || isLoading) return;
 
     handleStopSpeaking();
-    voiceHook.setIsListening(false);
+    voiceHook.stopListening();
     voiceHook.setCurrentText('');
 
     const timestamp = getFormattedDate();
@@ -314,11 +348,15 @@ export default function App() {
     try {
       const res = await fetch('/api/evaluate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(customApiKey ? { 'x-gemini-key': customApiKey } : {}),
+        },
         body: JSON.stringify({
           topic: activeTopic,
           action: 'finish',
           userMessage: finishPrompt,
+          customApiKey: customApiKey || undefined,
           history: updatedMessages.map((m) => ({
             role: m.role,
             text: m.text,
@@ -432,6 +470,7 @@ export default function App() {
         onChangeVoiceRate={setVoiceRate}
         onOpenNewTopic={() => setIsNewTopicModalOpen(true)}
         onOpenHistory={() => setIsHistoryModalOpen(true)}
+        onOpenSettings={() => setIsSettingsModalOpen(true)}
         savedSessionsCount={savedSessions.length}
         viewMode={viewMode}
         onToggleViewMode={() => setViewMode(viewMode === 'call' ? 'chat' : 'call')}
@@ -505,6 +544,16 @@ export default function App() {
         onSelectSession={handleSelectSession}
         onDeleteSession={handleDeleteSession}
         onClearAll={handleClearAllSessions}
+      />
+
+      {/* Settings Modal (API Key & Audio) */}
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        apiKey={customApiKey}
+        onSaveApiKey={setCustomApiKey}
+        voiceRate={voiceRate}
+        onChangeVoiceRate={setVoiceRate}
       />
     </div>
   );

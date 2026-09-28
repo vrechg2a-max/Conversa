@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { voice } from './audio';
+import { voice, sounds } from './audio';
 
 interface UseVoiceConversationProps {
   onSendMessage: (text: string) => void;
@@ -14,7 +14,7 @@ export function useVoiceConversation({
   isLoading,
   isSpeaking,
   activeTopic,
-  autoSendDelayMs = 1400,
+  autoSendDelayMs = 1350,
 }: UseVoiceConversationProps) {
   const [isListening, setIsListening] = useState<boolean>(false);
   const [currentText, setCurrentText] = useState<string>('');
@@ -26,11 +26,13 @@ export function useVoiceConversation({
   const recognitionRef = useRef<any>(null);
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const isManuallyStoppingRef = useRef<boolean>(false);
 
   const isListeningRef = useRef(isListening);
   const isSpeakingRef = useRef(isSpeaking);
   const isLoadingRef = useRef(isLoading);
   const currentTextRef = useRef(currentText);
+  const activeTopicRef = useRef(activeTopic);
 
   useEffect(() => {
     isListeningRef.current = isListening;
@@ -48,7 +50,11 @@ export function useVoiceConversation({
     currentTextRef.current = currentText;
   }, [currentText]);
 
-  // Clear silence timers
+  useEffect(() => {
+    activeTopicRef.current = activeTopic;
+  }, [activeTopic]);
+
+  // Clear silence countdowns
   const clearSilenceTimers = useCallback(() => {
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
@@ -61,6 +67,32 @@ export function useVoiceConversation({
     setSilenceCountdown(null);
   }, []);
 
+  // Safe start wrapper
+  const safeStartRecognition = useCallback(() => {
+    if (!recognitionRef.current || !isSupported) return;
+    try {
+      isManuallyStoppingRef.current = false;
+      recognitionRef.current.start();
+      setIsListening(true);
+    } catch (e: any) {
+      // If already started, mark isListening true
+      if (e?.name === 'InvalidStateError' || String(e).includes('already started')) {
+        setIsListening(true);
+      }
+    }
+  }, [isSupported]);
+
+  // Safe stop wrapper
+  const safeStopRecognition = useCallback(() => {
+    if (!recognitionRef.current) return;
+    clearSilenceTimers();
+    isManuallyStoppingRef.current = true;
+    try {
+      recognitionRef.current.stop();
+    } catch {}
+    setIsListening(false);
+  }, [clearSilenceTimers]);
+
   // Dispatch current accumulated speech
   const dispatchSend = useCallback(() => {
     const textToSend = currentTextRef.current.trim();
@@ -69,10 +101,15 @@ export function useVoiceConversation({
     clearSilenceTimers();
     setCurrentText('');
     setInterimText('');
-    onSendMessage(textToSend);
-  }, [onSendMessage, clearSilenceTimers]);
+    sounds.playMessageSentTone();
 
-  // Reset silence timer on new speech
+    // Temporarily pause recognition while AI evaluates
+    safeStopRecognition();
+
+    onSendMessage(textToSend);
+  }, [onSendMessage, clearSilenceTimers, safeStopRecognition]);
+
+  // Reset silence timer on new speech chunk
   const startSilenceTimer = useCallback(() => {
     clearSilenceTimers();
     if (!autoSendEnabled) return;
@@ -95,7 +132,7 @@ export function useVoiceConversation({
     }, duration);
   }, [autoSendEnabled, autoSendDelayMs, clearSilenceTimers, dispatchSend]);
 
-  // Initialize SpeechRecognition
+  // Initialize Web Speech Recognition
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -115,7 +152,7 @@ export function useVoiceConversation({
       recognition.maxAlternatives = 1;
 
       recognition.onresult = (event: any) => {
-        // If AI is speaking and user starts talking, interrupt AI immediately (barge-in)
+        // If AI is currently speaking and user begins talking, interrupt AI immediately (barge-in)
         if (isSpeakingRef.current) {
           voice.stop();
         }
@@ -141,43 +178,46 @@ export function useVoiceConversation({
           startSilenceTimer();
         } else if (interim.trim()) {
           setInterimText(interim);
-          // If we have some pending text or active speech, keep timer alive
           clearSilenceTimers();
         }
       };
 
       recognition.onerror = (event: any) => {
-        // 'no-speech' is completely normal when user pauses
         if (event.error === 'no-speech') {
+          // Normal silence, ignore
           return;
         }
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-          console.warn('Microphone permission not allowed:', event.error);
+          console.warn('Microphone not allowed:', event.error);
           setIsListening(false);
         }
       };
 
       recognition.onend = () => {
-        // Automatically keep alive if flagged as listening and not in loading/speaking
-        if (isListeningRef.current && !isLoadingRef.current) {
-          try {
-            recognition.start();
-          } catch {
-            // Wait slightly before restarting
-            setTimeout(() => {
-              if (isListeningRef.current && !isLoadingRef.current) {
-                try {
-                  recognition.start();
-                } catch {}
-              }
-            }, 300);
-          }
+        // If the user did not manually stop and we are supposed to be listening (and topic is open)
+        if (
+          isListeningRef.current &&
+          !isManuallyStoppingRef.current &&
+          !isLoadingRef.current &&
+          !isSpeakingRef.current &&
+          activeTopicRef.current
+        ) {
+          setTimeout(() => {
+            if (
+              isListeningRef.current &&
+              !isManuallyStoppingRef.current &&
+              !isLoadingRef.current &&
+              !isSpeakingRef.current
+            ) {
+              safeStartRecognition();
+            }
+          }, 150);
         }
       };
 
       recognitionRef.current = recognition;
     } catch (e) {
-      console.error('Speech recognition init error:', e);
+      console.error('Speech recognition error:', e);
       setIsSupported(false);
     }
 
@@ -189,27 +229,30 @@ export function useVoiceConversation({
         } catch {}
       }
     };
-  }, [clearSilenceTimers, startSilenceTimer]);
+  }, [clearSilenceTimers, startSilenceTimer, safeStartRecognition]);
 
-  // Synchronize mic on/off
-  useEffect(() => {
-    if (!recognitionRef.current || !isSupported) return;
+  // When AI finishes speaking and isLoading is false, re-activate microphone for continuous turn-taking!
+  const resumeTurnAfterAi = useCallback(() => {
+    if (!activeTopicRef.current) return;
+    clearSilenceTimers();
+    setCurrentText('');
+    setInterimText('');
+    isManuallyStoppingRef.current = false;
 
-    if (isListening) {
-      try {
-        recognitionRef.current.start();
-      } catch {}
-    } else {
-      clearSilenceTimers();
-      try {
-        recognitionRef.current.stop();
-      } catch {}
-    }
-  }, [isListening, isSupported, clearSilenceTimers]);
+    // Small delay to prevent catching the tail end of speaker audio
+    setTimeout(() => {
+      sounds.playYourTurnChime();
+      safeStartRecognition();
+    }, 250);
+  }, [clearSilenceTimers, safeStartRecognition]);
 
   const toggleListening = useCallback(() => {
-    setIsListening((prev) => !prev);
-  }, []);
+    if (isListeningRef.current) {
+      safeStopRecognition();
+    } else {
+      safeStartRecognition();
+    }
+  }, [safeStopRecognition, safeStartRecognition]);
 
   const manualSend = useCallback(() => {
     dispatchSend();
@@ -219,6 +262,9 @@ export function useVoiceConversation({
     isListening,
     setIsListening,
     toggleListening,
+    startListening: safeStartRecognition,
+    stopListening: safeStopRecognition,
+    resumeTurnAfterAi,
     currentText,
     setCurrentText,
     interimText,

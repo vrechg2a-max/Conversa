@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { 
   Radio, 
   Volume2, 
@@ -8,7 +8,7 @@ import {
   Sparkles,
   PhoneCall,
   MessageSquare,
-  Settings2
+  Settings
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -19,6 +19,7 @@ interface HeaderProps {
   onChangeVoiceRate: (rate: number) => void;
   onOpenNewTopic: () => void;
   onOpenHistory: () => void;
+  onOpenSettings: () => void;
   savedSessionsCount: number;
   viewMode: 'call' | 'chat';
   onToggleViewMode: () => void;
@@ -32,12 +33,11 @@ export const Header: React.FC<HeaderProps> = ({
   onChangeVoiceRate,
   onOpenNewTopic,
   onOpenHistory,
+  onOpenSettings,
   savedSessionsCount,
   viewMode,
   onToggleViewMode,
 }) => {
-  const [showSettings, setShowSettings] = useState(false);
-
   return (
     <header className="border-b border-stone-800 bg-stone-950/90 backdrop-blur sticky top-0 z-30 px-4 py-3 sm:px-6">
       <div className="max-w-6xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -86,25 +86,23 @@ export const Header: React.FC<HeaderProps> = ({
           )}
 
           {/* Voice Output (TTS) Toggle */}
-          <div className="relative">
-            <button
-              onClick={onToggleTts}
-              title={ttsEnabled ? 'Voz da IA ativada (clique para silenciar)' : 'Ativar voz falada da IA'}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border transition-all cursor-pointer ${
-                ttsEnabled
-                  ? 'bg-emerald-950/60 border-emerald-600/50 text-emerald-300'
-                  : 'bg-stone-900 border-stone-800 text-stone-400 hover:text-stone-200'
-              }`}
-            >
-              {ttsEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
-              <span className="hidden md:inline">{ttsEnabled ? 'Voz Ativa' : 'Voz Mudo'}</span>
-            </button>
-          </div>
+          <button
+            onClick={onToggleTts}
+            title={ttsEnabled ? 'Voz da IA ativada (clique para silenciar)' : 'Ativar voz falada da IA'}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border transition-all cursor-pointer ${
+              ttsEnabled
+                ? 'bg-emerald-950/60 border-emerald-600/50 text-emerald-300'
+                : 'bg-stone-900 border-stone-800 text-stone-400 hover:text-stone-200'
+            }`}
+          >
+            {ttsEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+            <span className="hidden md:inline">{ttsEnabled ? 'Voz Ativa' : 'Voz Mudo'}</span>
+          </button>
 
           {/* Voice Rate selector button */}
           <button
             onClick={() => {
-              const rates = [1.0, 1.1, 1.25, 0.9];
+              const rates = [1.0, 1.05, 1.15, 1.25, 0.9];
               const nextIdx = (rates.indexOf(voiceRate) + 1) % rates.length;
               onChangeVoiceRate(rates[nextIdx]);
             }}
@@ -114,7 +112,16 @@ export const Header: React.FC<HeaderProps> = ({
             {voiceRate}x
           </button>
 
-          {/* Caderno de Tópicos (Saved Topics History) */}
+          {/* Settings button */}
+          <button
+            onClick={onOpenSettings}
+            title="Configurações e Chave API Gemini"
+            className="p-2 rounded-xl bg-stone-900 border border-stone-800 hover:border-stone-700 text-stone-300 hover:text-white transition-all cursor-pointer"
+          >
+            <Settings className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Caderno de Tópicos */}
           <button
             onClick={onOpenHistory}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-900 border border-stone-800 hover:border-stone-700 text-stone-200 hover:text-white transition-all cursor-pointer"
