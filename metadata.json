@@ -1,0 +1,7 @@
+{
+  "name": "BancaExaminadoraAI",
+  "description": "Avaliador de Conhecimento e Especialista em Aprendizagem Ativa com rigor de bancas examinadoras.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
